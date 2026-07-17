@@ -11,11 +11,11 @@ namespace Gsplat
             public int RefCount;
         }
 
-        static readonly Dictionary<int, Cache> k_resourceCache = new();
+        static readonly Dictionary<ulong, Cache> k_resourceCache = new();
 
         public static GsplatResource Get(GsplatAsset asset)
         {
-            var key = asset.GetInstanceID();
+            var key = GsplatUtils.GetObjectId(asset);
             if (k_resourceCache.TryGetValue(key, out var cache))
             {
                 cache.RefCount++;
@@ -33,14 +33,19 @@ namespace Gsplat
 
         public static void Release(GsplatAsset asset)
         {
-            Release(asset.GetInstanceID());
+            Release(GsplatUtils.GetObjectId(asset));
         }
 
         public static void Release(int instanceID)
         {
-            if (instanceID == 0)
+            Release(unchecked((uint)instanceID));
+        }
+
+        internal static void Release(ulong objectID)
+        {
+            if (objectID == 0)
                 return;
-            if (!k_resourceCache.TryGetValue(instanceID, out var cache))
+            if (!k_resourceCache.TryGetValue(objectID, out var cache))
             {
                 Debug.LogWarning("Trying to release a GPU resource that is not cached.");
                 return;
@@ -49,7 +54,7 @@ namespace Gsplat
             cache.RefCount--;
             if (cache.RefCount != 0) return;
             cache.Resource.Dispose();
-            k_resourceCache.Remove(instanceID);
+            k_resourceCache.Remove(objectID);
         }
     }
 }

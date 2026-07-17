@@ -17,7 +17,7 @@ namespace Gsplat
         GsplatAsset m_gsplatAsset;
         public uint m_remainingCount = 0;
         public Bounds m_bounds;
-        int m_gsplatAssetID;
+        ulong m_gsplatAssetID;
 
         public GsplatResource GsplatResource;
         public GraphicsBuffer OrderBuffer { get; private set; }
@@ -39,7 +39,7 @@ namespace Gsplat
         uint m_sortsBeforeRecomputeCutouts = 0;
         public bool ComputeSortRequired = true;
         public bool ComputeCutoutsRequired = true;
-        Dictionary<int, (Vector3, Vector3)> m_prevCamTransforms;
+        Dictionary<ulong, (Vector3, Vector3)> m_prevCamTransforms;
 
         GsplatCutout.ShaderData[] m_cutoutsData;
         uint m_prevSplatCount;
@@ -47,7 +47,7 @@ namespace Gsplat
         public GsplatRendererImpl(uint splatCount)
         {
             SplatCount = splatCount;
-            m_prevCamTransforms = new Dictionary<int, (Vector3, Vector3)>();
+            m_prevCamTransforms = new Dictionary<ulong, (Vector3, Vector3)>();
             CreateResources(splatCount);
             CreatePropertyBlock();
         }
@@ -134,7 +134,7 @@ namespace Gsplat
         public void BindGsplatAsset(GsplatAsset gsplatAsset, bool asyncUpload = false)
         {
             Debug.Assert(m_gsplatAssetID == 0);
-            m_gsplatAssetID = gsplatAsset.GetInstanceID();
+            m_gsplatAssetID = GsplatUtils.GetObjectId(gsplatAsset);
             m_gsplatAsset = gsplatAsset;
             GsplatResource = GsplatResourceManager.Get(gsplatAsset);
             gsplatAsset.SetupMaterialPropertyBlock(m_propertyBlock, GsplatResource);
@@ -193,7 +193,7 @@ namespace Gsplat
         {
             foreach (var cam in Camera.allCameras)
             {
-                var id = cam.GetInstanceID();
+                var id = GsplatUtils.GetObjectId(cam);
                 if (m_prevCamTransforms.TryGetValue(id, out (Vector3, Vector3) prevCamTransform))
                 {
                     (Vector3 prevCamPos, Vector3 prevCamRot) = prevCamTransform;
@@ -209,7 +209,7 @@ namespace Gsplat
                 }
                 else
                 {
-                    m_prevCamTransforms.Add(cam.GetInstanceID(), (cam.transform.position, cam.transform.eulerAngles));
+                    m_prevCamTransforms.Add(id, (cam.transform.position, cam.transform.eulerAngles));
                     ForceRefresh();
                 }
             }

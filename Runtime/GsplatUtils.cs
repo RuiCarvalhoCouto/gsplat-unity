@@ -12,6 +12,15 @@ namespace Gsplat
         public const string k_PackagePath = "Packages/wu.yize.gsplat/";
         public static readonly Version k_Version = new("1.4.0");
 
+        internal static ulong GetObjectId(UnityEngine.Object obj)
+        {
+#if UNITY_6000_4_OR_NEWER
+            return EntityId.ToULong(obj.GetEntityId());
+#else
+            return unchecked((uint)obj.GetInstanceID());
+#endif
+        }
+
         // radix sort etc. friendly, see http://stereopsis.com/radix.html
         public static uint FloatToSortableUint(float f)
         {

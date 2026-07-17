@@ -68,7 +68,7 @@ namespace Gsplat
         readonly HashSet<IGsplat> m_gsplats = new();
         readonly HashSet<Camera> m_camerasInjected = new();
         readonly List<IGsplat> m_activeGsplats = new();
-        readonly HashSet<int> m_warnedUncompressed = new();
+        readonly HashSet<ulong> m_warnedUncompressed = new();
         GsplatSortPass m_sortPass;
         public const string k_passName = "SortGsplats";
         const string k_depthPassName = "Gsplat.ComputeDepth";
@@ -109,7 +109,7 @@ namespace Gsplat
                 return;
 
             if (gsplat is UnityEngine.Object obj)
-                m_warnedUncompressed.Remove(obj.GetInstanceID());
+                m_warnedUncompressed.Remove(GsplatUtils.GetObjectId(obj));
 
             m_globalRenderer.MarkGlobalBuffersDirty();
 
@@ -158,7 +158,7 @@ namespace Gsplat
             {
                 if (gs.GsplatResource is GsplatResourceSpark) continue;
                 var obj = gs as UnityEngine.Object;
-                var id = obj ? obj.GetInstanceID() : 0;
+                var id = obj ? GsplatUtils.GetObjectId(obj) : 0;
                 if (m_warnedUncompressed.Add(id))
                     Debug.LogWarning(
                         $"[GsplatSorter] '{obj?.name}' uses an uncompressed asset; global sort requires every active renderer to use SPARK compression. Disabling global sort for this scene — all renderers fall back to per-renderer rendering.");
