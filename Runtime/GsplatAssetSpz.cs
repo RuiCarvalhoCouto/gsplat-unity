@@ -52,11 +52,11 @@ namespace Gsplat
         }
 
         public override void LoadFromPly(string plyPath, ProgressCallback progressCallback = null,
-            SourceCoordinates sourceCoordinates = SourceCoordinates.RUF)
+            SourceCoordinates sourceCoordinates = SourceCoordinates.RUF, float opacityPruneThreshold = 0f)
             => throw new NotSupportedException("GsplatAssetSpz loads SPZ files, not PLY.");
 
         public override void LoadFromPlyBytes(byte[] plyBytes, ProgressCallback progressCallback = null,
-            SourceCoordinates sourceCoordinates = SourceCoordinates.RUF)
+            SourceCoordinates sourceCoordinates = SourceCoordinates.RUF, float opacityPruneThreshold = 0f)
             => throw new NotSupportedException("GsplatAssetSpz loads SPZ files, not PLY.");
 
         public SpzPhaseTimings LoadFromSpz(string spzPath,

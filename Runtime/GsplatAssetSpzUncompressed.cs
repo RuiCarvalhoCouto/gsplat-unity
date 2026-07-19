@@ -10,11 +10,11 @@ namespace Gsplat
     public class GsplatAssetSpzUncompressed : GsplatAssetUncompressed
     {
         public override void LoadFromPly(string plyPath, ProgressCallback progressCallback = null,
-            SourceCoordinates sourceCoordinates = SourceCoordinates.RUF)
+            SourceCoordinates sourceCoordinates = SourceCoordinates.RUF, float opacityPruneThreshold = 0f)
             => throw new System.NotSupportedException("GsplatAssetSpzUncompressed loads SPZ files, not PLY.");
 
         public override void LoadFromPlyBytes(byte[] plyBytes, ProgressCallback progressCallback = null,
-            SourceCoordinates sourceCoordinates = SourceCoordinates.RUF)
+            SourceCoordinates sourceCoordinates = SourceCoordinates.RUF, float opacityPruneThreshold = 0f)
             => throw new System.NotSupportedException("GsplatAssetSpzUncompressed loads SPZ files, not PLY.");
 
         public SpzPhaseTimings LoadFromSpz(string spzPath,

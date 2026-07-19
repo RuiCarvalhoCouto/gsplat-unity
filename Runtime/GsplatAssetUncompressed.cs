@@ -124,30 +124,32 @@ namespace Gsplat
         }
 
         public override void LoadFromPly(string plyPath, ProgressCallback progressCallback = null,
-            SourceCoordinates sourceCoordinates = SourceCoordinates.RUF)
+            SourceCoordinates sourceCoordinates = SourceCoordinates.RUF, float opacityPruneThreshold = 0f)
         {
             using var fs = new FileStream(plyPath, FileMode.Open, FileAccess.Read);
             // C# arrays and NativeArrays make it hard to have a "byte" array larger than 2GB :/
             if (fs.Length >= 2 * 1024 * 1024 * 1024L)
                 throw new NotSupportedException("currently files larger than 2GB are not supported");
 
-            LoadFromPlyStream(fs, progressCallback, sourceCoordinates);
+            LoadFromPlyStream(fs, progressCallback, sourceCoordinates, opacityPruneThreshold);
         }
 
         public override void LoadFromPlyBytes(byte[] plyBytes, ProgressCallback progressCallback = null,
-            SourceCoordinates sourceCoordinates = SourceCoordinates.RUF)
+            SourceCoordinates sourceCoordinates = SourceCoordinates.RUF, float opacityPruneThreshold = 0f)
         {
             if (plyBytes == null || plyBytes.Length == 0)
                 throw new ArgumentException("PLY byte array is null or empty.", nameof(plyBytes));
             using var ms = new MemoryStream(plyBytes, writable: false);
-            LoadFromPlyStream(ms, progressCallback, sourceCoordinates);
+            LoadFromPlyStream(ms, progressCallback, sourceCoordinates, opacityPruneThreshold);
         }
 
-        void LoadFromPlyStream(Stream fs, ProgressCallback progressCallback, SourceCoordinates sourceCoordinates)
+        void LoadFromPlyStream(Stream fs, ProgressCallback progressCallback, SourceCoordinates sourceCoordinates,
+            float opacityPruneThreshold)
         {
             var plyInfo = new PlyHeaderInfo(fs);
             var shCoeffs = plyInfo.SHPropertyCount / 3;
             SplatCount = plyInfo.VertexCount;
+            var sourceSplatCount = plyInfo.VertexCount;
             SHBands = GsplatUtils.CalcSHBandsFromSHPropertyCount(plyInfo.SHPropertyCount);
 
             if (SHBands > 4 || GsplatUtils.SHBandsToCoefficientCount(SHBands) * 3 != plyInfo.SHPropertyCount)
@@ -164,6 +166,7 @@ namespace Gsplat
 
             Allocate();
             var buffer = new byte[plyInfo.PropertyCount * sizeof(float)];
+            uint w = 0; // write index; splats below the prune threshold are skipped
             for (uint i = 0; i < plyInfo.VertexCount; i++)
             {
                 var readBytes = fs.Read(buffer);
@@ -171,15 +174,21 @@ namespace Gsplat
                     throw new EndOfStreamException($"unexpected end of file, got {readBytes} bytes at vertex {i}");
 
                 var properties = MemoryMarshal.Cast<byte, float>(buffer);
-                Positions[i] = new Vector3(
+                progressCallback?.Invoke("Reading vertices", i / (float)plyInfo.VertexCount);
+
+                var alpha = GsplatUtils.Sigmoid(properties[plyInfo.OpacityOffset]);
+                if (alpha < opacityPruneThreshold)
+                    continue;
+
+                Positions[w] = new Vector3(
                     posXSign * properties[plyInfo.PositionOffset],
                     posYSign * properties[plyInfo.PositionOffset + 1],
                     posZSign * properties[plyInfo.PositionOffset + 2]);
-                Colors[i] = new Vector4(
+                Colors[w] = new Vector4(
                     properties[plyInfo.ColorOffset],
                     properties[plyInfo.ColorOffset + 1],
                     properties[plyInfo.ColorOffset + 2],
-                    GsplatUtils.Sigmoid(properties[plyInfo.OpacityOffset]));
+                    alpha);
 
                 for (int j = 0, bandOffset = 0; j < SHBands; j++)
                 {
@@ -187,7 +196,7 @@ namespace Gsplat
                     for (int k = 0; k < bandSize; k++)
                     {
                         float sign = GsplatUtils.ShSign(sourceCoordinates, j + 1, k);
-                        int idx = (int)i * shCoeffs + bandOffset + k;
+                        int idx = (int)w * shCoeffs + bandOffset + k;
                         SHs[idx] = sign * new Vector3(
                             properties[bandOffset + k + plyInfo.SHOffset],
                             properties[bandOffset + k + plyInfo.SHOffset + shCoeffs],
@@ -196,20 +205,35 @@ namespace Gsplat
                     bandOffset += bandSize;
                 }
 
-                Scales[i] = new Vector3(
+                Scales[w] = new Vector3(
                     Mathf.Exp(properties[plyInfo.ScaleOffset]),
                     Mathf.Exp(properties[plyInfo.ScaleOffset + 1]),
                     Mathf.Exp(properties[plyInfo.ScaleOffset + 2]));
-                Rotations[i] = new Vector4(
+                Rotations[w] = new Vector4(
                     properties[plyInfo.RotationOffset],
                     rotXSign * properties[plyInfo.RotationOffset + 1],
                     rotYSign * properties[plyInfo.RotationOffset + 2],
                     rotZSign * properties[plyInfo.RotationOffset + 3]).normalized;
 
-                if (i == 0) Bounds = new Bounds(Positions[i], Vector3.zero);
-                else Bounds.Encapsulate(Positions[i]);
+                if (w == 0) Bounds = new Bounds(Positions[w], Vector3.zero);
+                else Bounds.Encapsulate(Positions[w]);
+                w++;
+            }
 
-                progressCallback?.Invoke("Reading vertices", i / (float)plyInfo.VertexCount);
+            if (w == 0 && plyInfo.VertexCount > 0)
+                throw new NotSupportedException(
+                    $"opacity prune threshold {opacityPruneThreshold} removed all {plyInfo.VertexCount} splats");
+
+            if (w != SplatCount)
+            {
+                SplatCount = w;
+                PrunedSplatCount = sourceSplatCount - SplatCount;
+                Array.Resize(ref Positions, (int)w);
+                Array.Resize(ref Colors, (int)w);
+                Array.Resize(ref Scales, (int)w);
+                Array.Resize(ref Rotations, (int)w);
+                if (SHBands > 0)
+                    Array.Resize(ref SHs, (int)w * shCoeffs);
             }
         }
     }

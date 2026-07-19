@@ -140,6 +140,8 @@ namespace Gsplat
     public abstract class GsplatAsset : ScriptableObject
     {
         public uint SplatCount;
+        // Pruned splat count during import time; SplatCount + PrunedSplatCount = splat count of the source file.
+        public uint PrunedSplatCount;
         public byte SHBands; // 0, 1, 2, 3, or 4
         public Bounds Bounds;
         public abstract CompressionMode Compression { get; }
@@ -154,10 +156,10 @@ namespace Gsplat
 
         public abstract void Allocate();
         public abstract void LoadFromPly(string plyPath, ProgressCallback progressCallback = null,
-            SourceCoordinates sourceCoordinates = SourceCoordinates.RUF);
+            SourceCoordinates sourceCoordinates = SourceCoordinates.RUF, float opacityPruneThreshold = 0f);
 
         public virtual void LoadFromPlyBytes(byte[] plyBytes, ProgressCallback progressCallback = null,
-            SourceCoordinates sourceCoordinates = SourceCoordinates.RUF)
+            SourceCoordinates sourceCoordinates = SourceCoordinates.RUF, float opacityPruneThreshold = 0f)
             => throw new NotSupportedException($"{GetType().Name} does not support loading PLY from bytes.");
 
         public abstract GsplatResource CreateResource();

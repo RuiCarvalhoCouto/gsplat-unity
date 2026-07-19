@@ -15,6 +15,12 @@ namespace Gsplat.Editor
     {
         public CompressionMode Compression = CompressionMode.Spark;
 
+        [Tooltip("Removes splats whose opacity (after sigmoid) is below this value at import time. 0 disables pruning.\n" +
+                 "Start around 0.01–0.05 and increase while checking the visual result. Reduces overdraw, memory usage, and load time.\n" +
+                 "Currently only supported for .ply import.")]
+        [Range(0f, 0.99f)]
+        public float OpacityPruneThreshold = 0f;
+
         [Tooltip("The coordinate frame the source asset was authored in.\n\n" +
                  "Positions, rotations, and SH coefficients are converted to Unity (RUF) at import time.\n\n" +
                  "RUB  — standard output of 3DGS training tools, gsplat, nerfstudio, and Niantic SPZ.\n" +
@@ -48,13 +54,17 @@ namespace Gsplat.Editor
                 ProgressCallback progress = (info, p) => EditorUtility.DisplayProgressBar(
                     "Importing Gsplat Asset", info, p);
 
+                if (isSpz && OpacityPruneThreshold > 0f)
+                    UnityEngine.Debug.LogWarning(
+                        $"[Gsplat Import] {ctx.assetPath}: OpacityPruneThreshold is currently only supported for .ply import (ignored for .spz)");
+
                 if (gsplatAsset is GsplatAssetSpzUncompressed spzUncompressedAsset)
                 {
                     spzTimings = spzUncompressedAsset.LoadFromSpz(ctx.assetPath, SourceCoordinates, progress);
                 }
                 else if (gsplatAsset is GsplatAssetSpz spzAsset)
                 {
-                    string cachePath = GetCachePath(ctx.assetPath, Compression, SourceCoordinates);
+                    string cachePath = GetCachePath(ctx.assetPath, Compression, SourceCoordinates, OpacityPruneThreshold);
                     if (!spzAsset.TryLoadFromCache(cachePath))
                     {
                         spzTimings = spzAsset.LoadFromSpz(ctx.assetPath, SourceCoordinates, progress);
@@ -70,7 +80,7 @@ namespace Gsplat.Editor
                 }
                 else
                 {
-                    gsplatAsset.LoadFromPly(ctx.assetPath, progress, SourceCoordinates);
+                    gsplatAsset.LoadFromPly(ctx.assetPath, progress, SourceCoordinates, OpacityPruneThreshold);
                 }
             }
             catch (Exception e)
@@ -89,6 +99,15 @@ namespace Gsplat.Editor
                 swTotal?.Stop();
             }
 
+            if (gsplatAsset.PrunedSplatCount > 0)
+            {
+                var removed = gsplatAsset.PrunedSplatCount;
+                var sourceSplatCount = gsplatAsset.SplatCount + gsplatAsset.PrunedSplatCount;
+                UnityEngine.Debug.Log(
+                    $"[Gsplat Import] {Path.GetFileName(ctx.assetPath)}: pruned {removed:N0} / {sourceSplatCount:N0} splats " +
+                    $"({removed * 100.0 / sourceSplatCount:F1}%) below opacity {OpacityPruneThreshold}");
+            }
+
             ctx.AddObjectToAsset("gsplatAsset", gsplatAsset);
             ctx.SetMainObject(gsplatAsset);
 
@@ -97,13 +116,16 @@ namespace Gsplat.Editor
 #endif
         }
 
-        // Cache key combines filename, file size, last-write time, compression mode, and
-        // source coordinate frame so any change in source file or import settings busts the cache.
-        static string GetCachePath(string assetPath, CompressionMode compression, SourceCoordinates sourceCoordinates)
+        // Cache key combines filename, file size, last-write time, compression mode, source
+        // coordinate frame, and prune threshold so any change in source file or import settings busts the cache.
+        static string GetCachePath(string assetPath, CompressionMode compression, SourceCoordinates sourceCoordinates,
+            float opacityPruneThreshold)
         {
             var fi = new FileInfo(assetPath);
             string stem = Path.GetFileNameWithoutExtension(assetPath);
-            string key = $"{stem}_{fi.Length}_{fi.LastWriteTimeUtc.Ticks}_{compression}_{sourceCoordinates}";
+            string key =
+                $"{stem}_{fi.Length}_{fi.LastWriteTimeUtc.Ticks}_{compression}_{sourceCoordinates}_" +
+                opacityPruneThreshold.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
             key = string.Join("_", key.Split(Path.GetInvalidFileNameChars()));
             return Path.Combine("Library", "GsplatCache", key + ".bin");
         }

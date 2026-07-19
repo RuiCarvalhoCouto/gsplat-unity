@@ -63,6 +63,8 @@ The next steps depend on the Render Pipeline you are using:
 
 Copy or drag & drop the PLY file anywhere into your project's `Assets` folder. The package will then automatically read the file and import it as a derived class of `Gsplat Asset`. The package supports two compression modes for the asset: `Uncompressed` and `Spark` (packed). The default mode is `Spark`, which is inspired by [spark.js](https://github.com/sparkjsdev/spark). You can change the compression mode in the inspector of the imported `Gsplat Asset`.
 
+The `Opacity Prune Threshold` import option removes splats whose opacity (after sigmoid) is below the threshold at import time. Since overdraw of many overlapping translucent splats is the main rendering cost of Gaussian Splatting, pruning nearly transparent splats can significantly improve frame rate, and also reduces memory usage and load time. Set the slider in the inspector of the imported asset and press `Apply` to reimport; the Console then logs how many splats were pruned (e.g. `[Gsplat Import] scene.ply: pruned N / M splats (x.x%)`). Start around `0.01`–`0.05` and increase while checking the visual result (thin fog-like details disappear first — as a reference, a threshold of `0.05` removed about 40% of the splats on one of our scans with little visible change). Setting it back to `0` and reimporting fully restores the original data. Currently only supported for `.ply` import.
+
 ### Add Gsplat Renderer
 
 Create or choose a game object in your scene, and add the `Gsplat Renderer` component on it. Point the `Gsplat Asset` field to one of your imported Gsplat Assets. Then it should appear in the viewport.
