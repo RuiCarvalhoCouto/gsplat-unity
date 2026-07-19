@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fixed PLY header parsing to count only vertex element properties. The package now supports PLY files exported by Apple's [ml-sharp](https://github.com/apple/ml-sharp). ([#33](https://github.com/wuyize25/gsplat-unity/pull/33) by [@TakashiYoshinaga](https://github.com/TakashiYoshinaga))
 
-- Fixed compilation errors on Unity 6.4 and later caused by the obsoletion of `Object.GetInstanceID()`, while preserving compatibility with older Unity versions.
+- Fixed compilation errors on Unity 6.4 and later caused by the obsoletion of `Object.GetInstanceID()`, while preserving compatibility with older Unity versions. ([#41](https://github.com/wuyize25/gsplat-unity/pull/41) by [@RuiCarvalhoCouto](https://github.com/RuiCarvalhoCouto))
 
 ## [1.3.0] - 2026-05-23
 
