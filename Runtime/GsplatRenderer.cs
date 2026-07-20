@@ -31,6 +31,8 @@ namespace Gsplat
         public float SplatDownscaleFactor = 0.0f;
 
         public bool GammaToLinear;
+        [Tooltip("Filters splats whose projected footprint is outside the camera view before sorting and drawing.")]
+        public bool EnableFrustumCulling;
         public bool AsyncUpload;
         public bool RenderBeforeUploadComplete = true;
 
@@ -39,6 +41,7 @@ namespace Gsplat
 
         GsplatAsset m_prevAsset;
         GsplatRendererImpl m_renderer;
+        bool m_warnedFrustumCullingUnavailable;
 
         public bool Valid => GsplatAsset &&
                              (RenderBeforeUploadComplete ? SplatCount > 0 : SplatCount == GsplatAsset.SplatCount);
@@ -81,11 +84,15 @@ namespace Gsplat
 
         public bool ComputeSortRequired => m_renderer.ComputeSortRequired;
         public bool ComputeCutoutsRequired => m_renderer.ComputeCutoutsRequired;
+        internal bool FrustumCullingActive => m_renderer is { FrustumCullingActive: true };
+        internal GraphicsBuffer VisibleCountBuffer => m_renderer?.VisibleCountBuffer;
+        internal GraphicsBuffer SortDispatchArgs => m_renderer?.SortDispatchArgs;
         public GsplatSortMode SortMode = GsplatSortMode.Always;
         [HideInInspector] public uint SortRefreshRate = 1;
         [HideInInspector] public uint CutoutsRefreshRate = 1;
 
         public void ComputeDepth(CommandBuffer cmd, Matrix4x4 matrixMv) => m_renderer.ComputeDepth(cmd, matrixMv);
+        internal void Cull(CommandBuffer cmd, Camera camera) => m_renderer.Cull(cmd, camera, transform);
 
         void OnEnable()
         {
@@ -161,6 +168,17 @@ namespace Gsplat
 
             if (Valid && GsplatSettings.Instance.Valid && GsplatSorter.Instance.Valid)
             {
+                bool cullingSupported = GsplatAsset.GsplatMaterial.FrustumCullShader &&
+                                        SystemInfo.supportsIndirectArgumentsBuffer;
+                if (EnableFrustumCulling && !cullingSupported && !m_warnedFrustumCullingUnavailable)
+                {
+                    Debug.LogWarning(
+                        $"[Gsplat] Frustum culling is unavailable for '{name}'; using the existing render path.", this);
+                    m_warnedFrustumCullingUnavailable = true;
+                }
+                else if (cullingSupported)
+                    m_warnedFrustumCullingUnavailable = false;
+                m_renderer.SetFrustumCulling(EnableFrustumCulling && cullingSupported);
                 m_renderer.EvaluateRefreshRequired(SortMode, SortRefreshRate - 1, CutoutsRefreshRate - 1);
                 m_renderer.DispatchInitOrder(Cutouts, transform.localToWorldMatrix, CutoutsUpdateBounds);
                 // When the global sorter has merged all renderers into a single draw call,

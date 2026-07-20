@@ -30,6 +30,8 @@ Shader "Gsplat/Global"
             #pragma multi_compile SH_BANDS_0 SH_BANDS_1 SH_BANDS_2 SH_BANDS_3 SH_BANDS_4
 
             #include "UnityCG.cginc"
+            #define UNITY_INDIRECT_DRAW_ARGS IndirectDrawIndexedArgs
+            #include "UnityIndirect.cginc"
 
             int _SplatInstanceSize;
 
@@ -55,6 +57,7 @@ Shader "Gsplat/Global"
 
             v2f vert(appdata v)
             {
+                InitIndirectDrawArgs(0);
                 v2f o;
                 UNITY_SETUP_INSTANCE_ID(v);
                 UNITY_INITIALIZE_OUTPUT(v2f, o);

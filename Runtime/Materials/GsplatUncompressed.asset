@@ -15,3 +15,4 @@ MonoBehaviour:
   DefaultMaterial: {fileID: 2100000, guid: 0065a348838e5474f802212446cf1ddd, type: 2}
   CalcDepthShader: {fileID: 7200000, guid: 03396f0af8c54a3093503c0c27511df3, type: 3}
   InitOrderShader: {fileID: 7200000, guid: 71f302cf0e7c6254e9bae3e5c94b77d6, type: 3}
+  FrustumCullShader: {fileID: 7200000, guid: 62b5db49bd45434da1ff2d51294e2a0c, type: 3}

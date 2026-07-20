@@ -45,5 +45,6 @@ namespace Gsplat
 
         public ComputeShader CalcDepthShader;
         public ComputeShader InitOrderShader;
+        public ComputeShader FrustumCullShader;
     }
 }

@@ -26,6 +26,8 @@ Shader "Gsplat/Standard"
             #pragma multi_compile UNCOMPRESSED SPARK
 
             #include "UnityCG.cginc"
+            #define UNITY_INDIRECT_DRAW_ARGS IndirectDrawIndexedArgs
+            #include "UnityIndirect.cginc"
             #include "Gsplat.hlsl"
             #ifdef UNCOMPRESSED
             #include "GsplatUncompressed.hlsl"
@@ -36,6 +38,7 @@ Shader "Gsplat/Standard"
 
 
             bool _GammaToLinear;
+            bool _UseVisibleCount;
             int _SplatCount;
             int _SplatInstanceSize;
             int _SHDegree;
@@ -43,6 +46,7 @@ Shader "Gsplat/Standard"
             float _Brightness;
             float _ScaleFactor;
             StructuredBuffer<uint> _OrderBuffer;
+            ByteAddressBuffer _VisibleCountBuffer;
 
             struct appdata
             {
@@ -61,7 +65,8 @@ Shader "Gsplat/Standard"
                 source.order = unity_InstanceID * _SplatInstanceSize + asuint(v.vertex.z);
                 #endif
 
-                if (source.order >= _SplatCount)
+                uint splatCount = _UseVisibleCount ? _VisibleCountBuffer.Load(0) : (uint)_SplatCount;
+                if (source.order >= splatCount)
                     return false;
 
                 source.id = _OrderBuffer[source.order];
@@ -79,6 +84,7 @@ Shader "Gsplat/Standard"
 
             v2f vert(appdata v)
             {
+                InitIndirectDrawArgs(0);
                 v2f o;
                 UNITY_SETUP_INSTANCE_ID(v);
                 UNITY_INITIALIZE_OUTPUT(v2f, o);

@@ -25,6 +25,41 @@
 #pragma kernel PackRendererOrders
 #pragma kernel MergeTwo
 #pragma kernel MergeTwoWithDepth
+#pragma kernel PrepareCount
+#pragma kernel BuildDrawArgs
+
+RWStructuredBuffer<uint> _Counts;
+ByteAddressBuffer _SrcCountBuffer;
+RWByteAddressBuffer _GlobalVisibleCountBuffer;
+RWByteAddressBuffer _GlobalDrawArgs;
+uint _UseSrcCountBuffer;
+uint _RendererIdx;
+uint _SrcCount;
+uint _CountAIndex;
+uint _CountBIndex;
+uint _OutputCountIndex;
+uint _SplatInstanceSize;
+uint _IndexCountPerInstance;
+uint _StartIndex;
+uint _BaseVertex;
+
+[numthreads(1, 1, 1)]
+void PrepareCount(uint3 id : SV_DispatchThreadID)
+{
+    _Counts[_RendererIdx] = _UseSrcCountBuffer != 0 ? _SrcCountBuffer.Load(0) : _SrcCount;
+}
+
+[numthreads(1, 1, 1)]
+void BuildDrawArgs(uint3 id : SV_DispatchThreadID)
+{
+    uint count = _Counts[_OutputCountIndex];
+    _GlobalVisibleCountBuffer.Store(0, count);
+    _GlobalDrawArgs.Store(0, _IndexCountPerInstance);
+    _GlobalDrawArgs.Store(4, (count + _SplatInstanceSize - 1u) / _SplatInstanceSize);
+    _GlobalDrawArgs.Store(8, _StartIndex);
+    _GlobalDrawArgs.Store(12, _BaseVertex);
+    _GlobalDrawArgs.Store(16, 0);
+}
 
 // -----------------------------------------------------------------------
 // PackRendererOrders
@@ -36,15 +71,13 @@ StructuredBuffer<float>   _RawDepths;     // per-renderer InputKeys  (sorted dep
 RWStructuredBuffer<uint>  _PackedOrders;  // scratch packed orders
 RWStructuredBuffer<float> _PackedDepths;  // scratch depths
 
-uint _RendererIdx;   // renderer ID to embed in bits [31:24]
-uint _SrcCount;      // number of valid elements to pack
 uint _DstOffset;     // element start index in the scratch buffers
 
 [numthreads(GROUP_SIZE, 1, 1)]
 void PackRendererOrders(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
-    if (i >= _SrcCount) return;
+    if (i >= _Counts[_RendererIdx]) return;
     _PackedOrders[_DstOffset + i] = (_RendererIdx << 24u) | (_RawOrders[i] & 0x00FFFFFFu);
     _PackedDepths[_DstOffset + i] = _RawDepths[i];
 }
@@ -74,16 +107,18 @@ RWStructuredBuffer<float> _OutputDepths;  // written only by MergeTwoWithDepth
 // Both lists sorted ascending; we want the p-th smallest element overall.
 uint MergePathSplit(uint p)
 {
+    uint countA = _Counts[_CountAIndex];
+    uint countB = _Counts[_CountBIndex];
     // Clamp to valid range of i (elements drawn from A).
-    uint lo = (p >= _CountB) ? p - _CountB : 0u;
-    uint hi = min(p, _CountA);
+    uint lo = (p >= countB) ? p - countB : 0u;
+    uint hi = min(p, countA);
 
     while (lo < hi)
     {
         uint mid  = lo + (hi - lo) / 2u;
         float dA  = _DepthsA[_OffsetA + mid];
         uint  jB  = p - mid - 1u;
-        float dB  = (jB < _CountB) ? _DepthsB[_OffsetB + jB] : -FLOAT_MAX;
+        float dB  = (jB < countB) ? _DepthsB[_OffsetB + jB] : -FLOAT_MAX;
 
         // A[mid] <= B[p-mid-1] means mid can still precede position p: try larger i.
         if (dA <= dB)
@@ -99,15 +134,19 @@ uint MergePathSplit(uint p)
 [numthreads(GROUP_SIZE, 1, 1)]
 void MergeTwo(uint3 id : SV_DispatchThreadID)
 {
+    uint countA = _Counts[_CountAIndex];
+    uint countB = _Counts[_CountBIndex];
+    if (id.x == 0)
+        _Counts[_OutputCountIndex] = countA + countB;
     uint p     = id.x;
-    uint total = _CountA + _CountB;
+    uint total = countA + countB;
     if (p >= total) return;
 
     uint i = MergePathSplit(p);
     uint j = p - i;
 
-    float dA = (i < _CountA) ? _DepthsA[_OffsetA + i] : FLOAT_MAX;
-    float dB = (j < _CountB) ? _DepthsB[_OffsetB + j] : FLOAT_MAX;
+    float dA = (i < countA) ? _DepthsA[_OffsetA + i] : FLOAT_MAX;
+    float dB = (j < countB) ? _DepthsB[_OffsetB + j] : FLOAT_MAX;
 
     _OutputOrders[_OutputOffset + p] = (dA <= dB) ? _OrdersA[_OffsetA + i] : _OrdersB[_OffsetB + j];
 }
@@ -116,15 +155,19 @@ void MergeTwo(uint3 id : SV_DispatchThreadID)
 [numthreads(GROUP_SIZE, 1, 1)]
 void MergeTwoWithDepth(uint3 id : SV_DispatchThreadID)
 {
+    uint countA = _Counts[_CountAIndex];
+    uint countB = _Counts[_CountBIndex];
+    if (id.x == 0)
+        _Counts[_OutputCountIndex] = countA + countB;
     uint p     = id.x;
-    uint total = _CountA + _CountB;
+    uint total = countA + countB;
     if (p >= total) return;
 
     uint i = MergePathSplit(p);
     uint j = p - i;
 
-    float dA = (i < _CountA) ? _DepthsA[_OffsetA + i] : FLOAT_MAX;
-    float dB = (j < _CountB) ? _DepthsB[_OffsetB + j] : FLOAT_MAX;
+    float dA = (i < countA) ? _DepthsA[_OffsetA + i] : FLOAT_MAX;
+    float dB = (j < countB) ? _DepthsB[_OffsetB + j] : FLOAT_MAX;
 
     if (dA <= dB)
     {

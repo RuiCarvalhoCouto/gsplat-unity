@@ -18,6 +18,8 @@ namespace Gsplat
         static readonly int k_bPassHist = Shader.PropertyToID("b_passHist");
         static readonly int k_bGlobalHist = Shader.PropertyToID("b_globalHist");
         static readonly int k_eRadixShift = Shader.PropertyToID("e_radixShift");
+        static readonly int k_eUseDynamicCount = Shader.PropertyToID("e_useDynamicCount");
+        static readonly int k_bNumKeys = Shader.PropertyToID("b_numKeys");
         static readonly int k_bSort = Shader.PropertyToID("b_sort");
         static readonly int k_bSortPayload = Shader.PropertyToID("b_sortPayload");
         static readonly int k_bAlt = Shader.PropertyToID("b_alt");
@@ -38,6 +40,8 @@ namespace Gsplat
         public struct Args
         {
             public uint Count;
+            public GraphicsBuffer CountBuffer;
+            public GraphicsBuffer DispatchArgs;
             public Matrix4x4 MatrixMv;
             public GraphicsBuffer PackedSplatsBuffer;
             public GraphicsBuffer InputKeys;
@@ -159,6 +163,14 @@ namespace Gsplat
             // Setup overall constants
             cmd.SetComputeIntParam(m_CS, k_eNumKeys, (int)numKeys);
             cmd.SetComputeIntParam(m_CS, k_eThreadBlocks, (int)threadBlocks);
+            bool dynamicCount = args.CountBuffer != null && args.DispatchArgs != null;
+            cmd.SetComputeIntParam(m_CS, k_eUseDynamicCount, dynamicCount ? 1 : 0);
+            if (dynamicCount)
+            {
+                cmd.SetComputeBufferParam(m_CS, m_kernelUpsweep, k_bNumKeys, args.CountBuffer);
+                cmd.SetComputeBufferParam(m_CS, m_kernelScan, k_bNumKeys, args.CountBuffer);
+                cmd.SetComputeBufferParam(m_CS, m_kernelDownsweep, k_bNumKeys, args.CountBuffer);
+            }
 
             //Set statically located buffers
             //Upsweep
@@ -184,7 +196,10 @@ namespace Gsplat
 
                 //Upsweep
                 cmd.SetComputeBufferParam(m_CS, m_kernelUpsweep, k_bSort, srcKeyBuffer);
-                cmd.DispatchCompute(m_CS, m_kernelUpsweep, (int)threadBlocks, 1, 1);
+                if (dynamicCount)
+                    cmd.DispatchCompute(m_CS, m_kernelUpsweep, args.DispatchArgs, 0);
+                else
+                    cmd.DispatchCompute(m_CS, m_kernelUpsweep, (int)threadBlocks, 1, 1);
 
                 // Scan
                 cmd.DispatchCompute(m_CS, m_kernelScan, (int)k_deviceRadixSortRadix, 1, 1);
@@ -194,7 +209,10 @@ namespace Gsplat
                 cmd.SetComputeBufferParam(m_CS, m_kernelDownsweep, k_bSortPayload, srcPayloadBuffer);
                 cmd.SetComputeBufferParam(m_CS, m_kernelDownsweep, k_bAlt, dstKeyBuffer);
                 cmd.SetComputeBufferParam(m_CS, m_kernelDownsweep, k_bAltPayload, dstPayloadBuffer);
-                cmd.DispatchCompute(m_CS, m_kernelDownsweep, (int)threadBlocks, 1, 1);
+                if (dynamicCount)
+                    cmd.DispatchCompute(m_CS, m_kernelDownsweep, args.DispatchArgs, 0);
+                else
+                    cmd.DispatchCompute(m_CS, m_kernelDownsweep, (int)threadBlocks, 1, 1);
 
                 // Swap
                 (srcKeyBuffer, dstKeyBuffer) = (dstKeyBuffer, srcKeyBuffer);

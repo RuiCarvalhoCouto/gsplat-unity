@@ -1,0 +1,12 @@
+{
+  "name": "Gsplat.FrustumCulling.Tests",
+  "references": [
+    "Gsplat"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "optionalUnityReferences": [
+    "TestAssemblies"
+  ]
+}

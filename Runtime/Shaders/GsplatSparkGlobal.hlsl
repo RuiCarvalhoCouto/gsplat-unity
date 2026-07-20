@@ -46,7 +46,8 @@ StructuredBuffer<RendererParams> _RendererParams;
 // Entry: (renderer_id:8 | local_splat_id:24)
 StructuredBuffer<uint>     _GlobalOrderBuffer;
 
-uint _TotalSplatCount;
+bool _UseVisibleCount;
+ByteAddressBuffer _VisibleCountBuffer;
 
 // Extended source struct for global rendering.
 struct GlobalSplatSource
@@ -61,7 +62,7 @@ bool InitGlobalSource(uint instanceId, float3 vertex, out GlobalSplatSource sour
 {
     source.order = instanceId * _SplatInstanceSize + asuint(vertex.z);
 
-    if (source.order >= _TotalSplatCount)
+    if (source.order >= _VisibleCountBuffer.Load(0))
         return false;
 
     uint packed     = _GlobalOrderBuffer[source.order];

@@ -72,6 +72,7 @@ namespace Gsplat
         GsplatSortPass m_sortPass;
         public const string k_passName = "SortGsplats";
         const string k_depthPassName = "Gsplat.ComputeDepth";
+        const string k_cullPassName = "Gsplat.FrustumCull";
         const string k_radixSortPassName = "Gsplat.RadixSort";
 
         readonly GsplatGlobalRenderer m_globalRenderer = new();
@@ -194,11 +195,21 @@ namespace Gsplat
 
         public void DispatchSort(CommandBuffer cmd, Camera camera)
         {
+            cmd.BeginSample(k_cullPassName);
+            foreach (var gs in m_activeGsplats)
+            {
+                if (gs is GsplatRenderer { FrustumCullingActive: true } renderer &&
+                    gs.ComputeSortRequired)
+                    renderer.Cull(cmd, camera);
+            }
+            cmd.EndSample(k_cullPassName);
+
             // --- Per-renderer depth computation ---
             cmd.BeginSample(k_depthPassName);
             foreach (var gs in m_activeGsplats)
             {
-                if (gs.RemainingCount <= 0) continue;
+                if (gs.RemainingCount <= 0 || !gs.ComputeSortRequired ||
+                    gs is GsplatRenderer { FrustumCullingActive: true }) continue;
                 gs.ComputeDepth(cmd, camera.worldToCameraMatrix * gs.transform.localToWorldMatrix);
             }
 
@@ -212,15 +223,24 @@ namespace Gsplat
                 if (!gs.ComputeSortRequired || gs.RemainingCount <= 0)
                     continue;
 
-                if (!res.Initialized)
+                bool dynamicCount = gs is GsplatRenderer { FrustumCullingActive: true };
+                if (!res.Initialized && !dynamicCount)
                 {
                     m_sortPass.InitPayload(cmd, res.OrderBuffer, (uint)res.OrderBuffer.count);
                     res.Initialized = true;
                 }
+                else if (dynamicCount)
+                    res.Initialized = true;
 
                 m_sortPass.Dispatch(cmd, new GsplatSortPass.Args
                 {
                     Count = gs.RemainingCount,
+                    CountBuffer = gs is GsplatRenderer { FrustumCullingActive: true } cullingRenderer
+                        ? cullingRenderer.VisibleCountBuffer
+                        : null,
+                    DispatchArgs = gs is GsplatRenderer { FrustumCullingActive: true } indirectRenderer
+                        ? indirectRenderer.SortDispatchArgs
+                        : null,
                     MatrixMv = camera.worldToCameraMatrix * gs.transform.localToWorldMatrix,
                     InputKeys = res.InputKeys,
                     InputValues = res.OrderBuffer,

@@ -1,0 +1,162 @@
+// Copyright (c) 2026 Rui Couto
+// SPDX-License-Identifier: MIT
+
+#define GROUP_SIZE 256
+
+#pragma kernel Clear
+#pragma kernel CullUncompressed
+#pragma kernel CullSpark
+#pragma kernel BuildArgs
+
+uint _CandidateCount;
+uint _UseCandidateOrder;
+uint _EyeCount;
+uint _SplatInstanceSize;
+uint _IndexCountPerInstance;
+uint _StartIndex;
+uint _BaseVertex;
+float2 _ViewportSize;
+float4x4 _MatrixMV0;
+float4x4 _MatrixMV1;
+float4x4 _MatrixMVDepth;
+float4x4 _MatrixP0;
+float4x4 _MatrixP1;
+
+StructuredBuffer<uint> _CandidateOrderBuffer;
+StructuredBuffer<float3> _PositionBuffer;
+StructuredBuffer<float3> _ScaleBuffer;
+StructuredBuffer<float4> _RotationBuffer;
+StructuredBuffer<uint4> _PackedSplatsBuffer;
+
+RWStructuredBuffer<uint> _OrderBuffer;
+RWStructuredBuffer<float> _DepthBuffer;
+RWByteAddressBuffer _VisibleCountBuffer;
+RWByteAddressBuffer _SortDispatchArgs;
+RWByteAddressBuffer _DrawArgs;
+
+float4 DecodeQuatOctXyz88R8(uint encoded)
+{
+    float2 f = float2(encoded & 0xFFu, (encoded >> 8u) & 0xFFu) / 255.0 * 2.0 - 1.0;
+    float3 axis = float3(f, 1.0 - abs(f.x) - abs(f.y));
+    float t = max(-axis.z, 0.0);
+    axis.x += axis.x >= 0.0 ? -t : t;
+    axis.y += axis.y >= 0.0 ? -t : t;
+    axis = normalize(axis);
+
+    float halfTheta = (float(encoded >> 16u) / 255.0) * 1.5707963267948966;
+    return float4(axis * sin(halfTheta), cos(halfTheta));
+}
+
+float3x3 QuatToMat3(float4 r)
+{
+    float4 r2 = r + r;
+    float x = r2.x * r.w;
+    float4 y = r2.y * r;
+    float4 z = r2.z * r;
+    float w = r2.w * r.w;
+    return float3x3(
+        1.0 - z.z - w, y.z + x, y.w - z.x,
+        y.z - x, 1.0 - y.y - w, z.w + y.x,
+        y.w + z.x, z.w - y.x, 1.0 - y.y - z.z);
+}
+
+bool FootprintOverlapsView(float3 modelCenter, float3 scale, float4 quat, float4x4 matrixMV, float4x4 matrixP)
+{
+    float4 centerView4 = mul(matrixMV, float4(modelCenter, 1.0));
+    if (centerView4.z > 0.0)
+        return false;
+
+    float3 centerView = centerView4.xyz / centerView4.w;
+    float4 centerProj = mul(matrixP, centerView4);
+
+    float3x3 rot = QuatToMat3(quat);
+    float3x3 m = transpose(float3x3(scale.x * rot[0], scale.y * rot[1], scale.z * rot[2]));
+    float3 covA = float3(dot(m[0], m[0]), dot(m[0], m[1]), dot(m[0], m[2]));
+    float3 covB = float3(dot(m[1], m[1]), dot(m[1], m[2]), dot(m[2], m[2]));
+    float3x3 vrk = float3x3(covA.x, covA.y, covA.z, covA.y, covB.x, covB.y, covA.z, covB.y, covB.z);
+
+    float focal = _ViewportSize.x * matrixP[0][0];
+    float3 v = matrixP[3][3] == 1.0 ? float3(0.0, 0.0, 1.0) : centerView;
+    if (matrixP[3][3] != 1.0)
+        v.z = min(v.z, -1e-6);
+    float j1 = focal / v.z;
+    float2 j2 = -j1 / v.z * v.xy;
+    float3x3 j = float3x3(j1, 0.0, j2.x, 0.0, j1, j2.y, 0.0, 0.0, 0.0);
+    float3x3 t = mul(j, (float3x3)matrixMV);
+    float3x3 cov = mul(mul(t, vrk), transpose(t));
+
+    float diagonal1 = cov[0][0] + 0.3;
+    float offDiagonal = cov[0][1];
+    float diagonal2 = cov[1][1] + 0.3;
+    float mid = 0.5 * (diagonal1 + diagonal2);
+    float radius = length(float2((diagonal1 - diagonal2) * 0.5, offDiagonal));
+    float lambda1 = mid + radius;
+    float lambda2 = max(mid - radius, 0.1);
+    float vmin = min(1024.0, min(_ViewportSize.x, _ViewportSize.y));
+    float maxL = max(2.0 * min(sqrt(2.0 * lambda1), vmin),
+                     2.0 * min(sqrt(2.0 * lambda2), vmin));
+    float2 clipExtent = maxL * centerProj.ww / _ViewportSize;
+    return !any(abs(centerProj.xy) - clipExtent > centerProj.ww);
+}
+
+void AppendIfVisible(uint candidateIndex, float3 position, float3 scale, float4 rotation)
+{
+    bool visible0 = FootprintOverlapsView(position, scale, rotation, _MatrixMV0, _MatrixP0);
+    bool visible1 = _EyeCount > 1 && FootprintOverlapsView(position, scale, rotation, _MatrixMV1, _MatrixP1);
+    if (!visible0 && !visible1)
+        return;
+
+    uint outputIndex;
+    _VisibleCountBuffer.InterlockedAdd(0, 1, outputIndex);
+    _OrderBuffer[outputIndex] = candidateIndex;
+    _DepthBuffer[outputIndex] = mul(_MatrixMVDepth, float4(position, 1.0)).z;
+}
+
+[numthreads(1, 1, 1)]
+void Clear(uint3 id : SV_DispatchThreadID)
+{
+    _VisibleCountBuffer.Store(0, 0);
+}
+
+[numthreads(GROUP_SIZE, 1, 1)]
+void CullUncompressed(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _CandidateCount)
+        return;
+    uint splatId = _UseCandidateOrder != 0 ? _CandidateOrderBuffer[id.x] : id.x;
+    AppendIfVisible(splatId, _PositionBuffer[splatId], _ScaleBuffer[splatId], _RotationBuffer[splatId]);
+}
+
+[numthreads(GROUP_SIZE, 1, 1)]
+void CullSpark(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _CandidateCount)
+        return;
+    uint splatId = _UseCandidateOrder != 0 ? _CandidateOrderBuffer[id.x] : id.x;
+    uint4 word = _PackedSplatsBuffer[splatId];
+    float3 position = float3(f16tof32(word.y & 0xFFFFu), f16tof32(word.y >> 16u), f16tof32(word.z & 0xFFFFu));
+    uint3 encodedScale = uint3(word.w & 0xFFu, (word.w >> 8u) & 0xFFu, (word.w >> 16u) & 0xFFu);
+    float scaleStep = 21.0 / 254.0;
+    float3 scale = float3(
+        encodedScale.x == 0 ? 0.0 : exp(-12.0 + float(encodedScale.x - 1u) * scaleStep),
+        encodedScale.y == 0 ? 0.0 : exp(-12.0 + float(encodedScale.y - 1u) * scaleStep),
+        encodedScale.z == 0 ? 0.0 : exp(-12.0 + float(encodedScale.z - 1u) * scaleStep));
+    uint encodedRotation = ((word.z >> 16u) & 0xFFFFu) | ((word.w >> 8u) & 0xFF0000u);
+    AppendIfVisible(splatId, position, scale, DecodeQuatOctXyz88R8(encodedRotation));
+}
+
+[numthreads(1, 1, 1)]
+void BuildArgs(uint3 id : SV_DispatchThreadID)
+{
+    uint visibleCount = _VisibleCountBuffer.Load(0);
+    uint sortGroups = max(1u, (visibleCount + 3839u) / 3840u);
+    _SortDispatchArgs.Store(0, sortGroups);
+    _SortDispatchArgs.Store(4, 1);
+    _SortDispatchArgs.Store(8, 1);
+
+    _DrawArgs.Store(0, _IndexCountPerInstance);
+    _DrawArgs.Store(4, (visibleCount + _SplatInstanceSize - 1u) / _SplatInstanceSize);
+    _DrawArgs.Store(8, _StartIndex);
+    _DrawArgs.Store(12, _BaseVertex);
+    _DrawArgs.Store(16, 0);
+}

@@ -15,6 +15,8 @@ namespace Gsplat
         int m_kernelPackOrders = -1;
         int m_kernelMergeTwo = -1;
         int m_kernelMergeTwoWithDepth = -1;
+        int m_kernelPrepareCount = -1;
+        int m_kernelBuildDrawArgs = -1;
         int m_kernelCopyUint4 = -1;
         int m_kernelCopyUint2 = -1;
 
@@ -22,7 +24,6 @@ namespace Gsplat
         uint[] m_rendererOffsets; // splat start index in global buffers, per active renderer
         uint[] m_builtSplatCounts; // per-renderer SplatCount captured when the global buffers were last built
         uint m_totalSplatCount;
-        uint m_totalRemainingCount; // sum of RemainingCounts; valid entries in GlobalOrderBuffer after merge
         byte m_globalSHBands;
         bool m_globalBuffersDirty = true;
 
@@ -36,6 +37,9 @@ namespace Gsplat
         GraphicsBuffer m_rendererOffsetsBuffer;
         GraphicsBuffer m_rendererTransformsBuffer;
         GraphicsBuffer m_rendererParamsBuffer;
+        GraphicsBuffer m_countsBuffer;
+        GraphicsBuffer m_globalVisibleCountBuffer;
+        GraphicsBuffer m_globalDrawArgs;
 
         // Per-renderer visual settings, looked up by renderer_id during the merged draw.
         // Matches the RendererParams struct in GsplatSparkGlobal.hlsl (16-byte stride).
@@ -63,6 +67,8 @@ namespace Gsplat
                              && m_kernelPackOrders >= 0
                              && m_kernelMergeTwo >= 0
                              && m_kernelMergeTwoWithDepth >= 0
+                             && m_kernelPrepareCount >= 0
+                             && m_kernelBuildDrawArgs >= 0
                              && m_kernelCopyUint4 >= 0
                              && m_kernelCopyUint2 >= 0;
 
@@ -90,6 +96,17 @@ namespace Gsplat
         static readonly int k_outputOffset = Shader.PropertyToID("_OutputOffset");
         static readonly int k_outputOrders = Shader.PropertyToID("_OutputOrders");
         static readonly int k_outputDepths = Shader.PropertyToID("_OutputDepths");
+        static readonly int k_counts = Shader.PropertyToID("_Counts");
+        static readonly int k_srcCountBuffer = Shader.PropertyToID("_SrcCountBuffer");
+        static readonly int k_useSrcCountBuffer = Shader.PropertyToID("_UseSrcCountBuffer");
+        static readonly int k_countAIndex = Shader.PropertyToID("_CountAIndex");
+        static readonly int k_countBIndex = Shader.PropertyToID("_CountBIndex");
+        static readonly int k_outputCountIndex = Shader.PropertyToID("_OutputCountIndex");
+        static readonly int k_globalVisibleCountBuffer = Shader.PropertyToID("_GlobalVisibleCountBuffer");
+        static readonly int k_globalDrawArgs = Shader.PropertyToID("_GlobalDrawArgs");
+        static readonly int k_indexCountPerInstance = Shader.PropertyToID("_IndexCountPerInstance");
+        static readonly int k_startIndex = Shader.PropertyToID("_StartIndex");
+        static readonly int k_baseVertex = Shader.PropertyToID("_BaseVertex");
 
         // Copy kernel IDs
         static readonly int k_srcUint4 = Shader.PropertyToID("_SrcUint4");
@@ -109,7 +126,8 @@ namespace Gsplat
         static readonly int k_rendererOffsetsProp = Shader.PropertyToID("_RendererOffsets");
         static readonly int k_rendererTransformsProp = Shader.PropertyToID("_RendererTransforms");
         static readonly int k_rendererParamsProp = Shader.PropertyToID("_RendererParams");
-        static readonly int k_totalSplatCount = Shader.PropertyToID("_TotalSplatCount");
+        static readonly int k_useVisibleCount = Shader.PropertyToID("_UseVisibleCount");
+        static readonly int k_visibleCountBuffer = Shader.PropertyToID("_VisibleCountBuffer");
         static readonly int k_splatInstanceSize = Shader.PropertyToID("_SplatInstanceSize");
 
         public void InitGlobal(GsplatGlobalMaterial globalMaterial)
@@ -118,6 +136,8 @@ namespace Gsplat
             m_kernelPackOrders = -1;
             m_kernelMergeTwo = -1;
             m_kernelMergeTwoWithDepth = -1;
+            m_kernelPrepareCount = -1;
+            m_kernelBuildDrawArgs = -1;
             m_kernelCopyUint4 = -1;
             m_kernelCopyUint2 = -1;
 
@@ -134,6 +154,8 @@ namespace Gsplat
                     m_kernelPackOrders = mergeShader.FindKernel("PackRendererOrders");
                     m_kernelMergeTwo = mergeShader.FindKernel("MergeTwo");
                     m_kernelMergeTwoWithDepth = mergeShader.FindKernel("MergeTwoWithDepth");
+                    m_kernelPrepareCount = mergeShader.FindKernel("PrepareCount");
+                    m_kernelBuildDrawArgs = mergeShader.FindKernel("BuildDrawArgs");
                 }
             }
 
@@ -227,6 +249,13 @@ namespace Gsplat
                 { name = "Gsplat.RendererTransforms" };
             m_rendererParamsBuffer = new GraphicsBuffer(st, activeGsplats.Count, sizeof(float) * 2 + sizeof(uint) * 2)
                 { name = "Gsplat.RendererParams" };
+            m_countsBuffer = new GraphicsBuffer(st, activeGsplats.Count * 2, sizeof(uint))
+                { name = "Gsplat.VisibleCounts" };
+            m_globalVisibleCountBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Raw, 1, sizeof(uint))
+                { name = "Gsplat.GlobalVisibleCount" };
+            m_globalDrawArgs = new GraphicsBuffer(GraphicsBuffer.Target.IndirectArguments, 1, sizeof(uint) * 5)
+                { name = "Gsplat.GlobalDrawArgs" };
+            m_globalDrawArgs.SetData(new uint[5]);
 
             if (m_globalSHBands >= 1)
                 m_globalSH1Buffer = new GraphicsBuffer(st, (int)m_totalSplatCount, sizeof(uint) * 2)
@@ -364,6 +393,22 @@ namespace Gsplat
             int K = activeGsplats.Count;
             if (K < 2 || m_globalOrderBuffer == null) return;
 
+            var mergeShader = m_globalMaterial.MergeShader;
+
+            // Counts remain on the GPU so culling never forces a readback.
+            for (int k = 0; k < K; k++)
+            {
+                var gs = activeGsplats[k];
+                bool dynamicCount = gs is GsplatRenderer { FrustumCullingActive: true };
+                cmd.SetComputeIntParam(mergeShader, k_rendererIdx, k);
+                cmd.SetComputeIntParam(mergeShader, k_srcCount, (int)gs.RemainingCount);
+                cmd.SetComputeIntParam(mergeShader, k_useSrcCountBuffer, dynamicCount ? 1 : 0);
+                cmd.SetComputeBufferParam(mergeShader, m_kernelPrepareCount, k_counts, m_countsBuffer);
+                cmd.SetComputeBufferParam(mergeShader, m_kernelPrepareCount, k_srcCountBuffer,
+                    dynamicCount ? ((GsplatRenderer)gs).VisibleCountBuffer : m_globalVisibleCountBuffer);
+                cmd.DispatchCompute(mergeShader, m_kernelPrepareCount, 1, 1, 1);
+            }
+
             // Step 1: pack each renderer's sorted orders + depths into m_packScratch.
             for (int k = 0; k < K; k++)
             {
@@ -373,17 +418,17 @@ namespace Gsplat
                 uint off = m_rendererOffsets[k];
                 if (cnt == 0) continue;
 
-                cmd.SetComputeIntParam(m_globalMaterial.MergeShader, k_rendererIdx, k);
-                cmd.SetComputeIntParam(m_globalMaterial.MergeShader, k_srcCount, (int)cnt);
-                cmd.SetComputeIntParam(m_globalMaterial.MergeShader, k_dstOffset, (int)off);
-                cmd.SetComputeBufferParam(m_globalMaterial.MergeShader, m_kernelPackOrders, k_rawOrders,
+                cmd.SetComputeIntParam(mergeShader, k_rendererIdx, k);
+                cmd.SetComputeIntParam(mergeShader, k_dstOffset, (int)off);
+                cmd.SetComputeBufferParam(mergeShader, m_kernelPackOrders, k_counts, m_countsBuffer);
+                cmd.SetComputeBufferParam(mergeShader, m_kernelPackOrders, k_rawOrders,
                     res.OrderBuffer);
-                cmd.SetComputeBufferParam(m_globalMaterial.MergeShader, m_kernelPackOrders, k_rawDepths, res.InputKeys);
-                cmd.SetComputeBufferParam(m_globalMaterial.MergeShader, m_kernelPackOrders, k_packedOrders,
+                cmd.SetComputeBufferParam(mergeShader, m_kernelPackOrders, k_rawDepths, res.InputKeys);
+                cmd.SetComputeBufferParam(mergeShader, m_kernelPackOrders, k_packedOrders,
                     m_packScratchOrders);
-                cmd.SetComputeBufferParam(m_globalMaterial.MergeShader, m_kernelPackOrders, k_packedDepths,
+                cmd.SetComputeBufferParam(mergeShader, m_kernelPackOrders, k_packedDepths,
                     m_packScratchDepths);
-                cmd.DispatchCompute(m_globalMaterial.MergeShader, m_kernelPackOrders,
+                cmd.DispatchCompute(mergeShader, m_kernelPackOrders,
                     (int)GsplatUtils.DivRoundUp(cnt, 256), 1, 1);
             }
 
@@ -395,6 +440,7 @@ namespace Gsplat
 
             uint mergedCount = activeGsplats[0].RemainingCount; // size of merged result so far
             uint mergedOffset = 0; // always at start of its scratch buffer
+            int mergedCountIndex = 0;
 
             // Current merged result lives in: packScratch initially (range [0, mergedCount)).
             // We swap between packScratch and mergeScratch each pass.
@@ -431,29 +477,44 @@ namespace Gsplat
                 }
 
                 int kernel = isFinal ? m_kernelMergeTwo : m_kernelMergeTwoWithDepth;
+                int outputCountIndex = K + k - 1;
 
-                cmd.SetComputeIntParam(m_globalMaterial.MergeShader, k_offsetA, (int)mergedOffset);
-                cmd.SetComputeIntParam(m_globalMaterial.MergeShader, k_offsetB, (int)offK);
-                cmd.SetComputeIntParam(m_globalMaterial.MergeShader, k_countA, (int)mergedCount);
-                cmd.SetComputeIntParam(m_globalMaterial.MergeShader, k_countB, (int)cntK);
-                cmd.SetComputeIntParam(m_globalMaterial.MergeShader, k_outputOffset, 0);
-                cmd.SetComputeBufferParam(m_globalMaterial.MergeShader, kernel, k_depthsA, srcADepths);
-                cmd.SetComputeBufferParam(m_globalMaterial.MergeShader, kernel, k_ordersA, srcAOrders);
-                cmd.SetComputeBufferParam(m_globalMaterial.MergeShader, kernel, k_depthsB, srcBDepths);
-                cmd.SetComputeBufferParam(m_globalMaterial.MergeShader, kernel, k_ordersB, srcBOrders);
-                cmd.SetComputeBufferParam(m_globalMaterial.MergeShader, kernel, k_outputOrders, dstOrders);
+                cmd.SetComputeIntParam(mergeShader, k_offsetA, (int)mergedOffset);
+                cmd.SetComputeIntParam(mergeShader, k_offsetB, (int)offK);
+                cmd.SetComputeIntParam(mergeShader, k_countAIndex, mergedCountIndex);
+                cmd.SetComputeIntParam(mergeShader, k_countBIndex, k);
+                cmd.SetComputeIntParam(mergeShader, k_outputCountIndex, outputCountIndex);
+                cmd.SetComputeIntParam(mergeShader, k_outputOffset, 0);
+                cmd.SetComputeBufferParam(mergeShader, kernel, k_counts, m_countsBuffer);
+                cmd.SetComputeBufferParam(mergeShader, kernel, k_depthsA, srcADepths);
+                cmd.SetComputeBufferParam(mergeShader, kernel, k_ordersA, srcAOrders);
+                cmd.SetComputeBufferParam(mergeShader, kernel, k_depthsB, srcBDepths);
+                cmd.SetComputeBufferParam(mergeShader, kernel, k_ordersB, srcBOrders);
+                cmd.SetComputeBufferParam(mergeShader, kernel, k_outputOrders, dstOrders);
                 if (!isFinal)
-                    cmd.SetComputeBufferParam(m_globalMaterial.MergeShader, kernel, k_outputDepths, dstDepths);
+                    cmd.SetComputeBufferParam(mergeShader, kernel, k_outputDepths, dstDepths);
 
-                cmd.DispatchCompute(m_globalMaterial.MergeShader, kernel, (int)GsplatUtils.DivRoundUp(total, 256), 1,
+                cmd.DispatchCompute(mergeShader, kernel, (int)GsplatUtils.DivRoundUp(total, 256), 1,
                     1);
 
                 mergedCount = total;
+                mergedCountIndex = outputCountIndex;
                 mergedOffset = 0; // output always starts at 0 in the destination buffer
                 mergedInPack = !mergedInPack;
             }
 
-            m_totalRemainingCount = mergedCount;
+            var mesh = GsplatSettings.Instance.Mesh;
+            cmd.SetComputeIntParam(mergeShader, k_outputCountIndex, mergedCountIndex);
+            cmd.SetComputeIntParam(mergeShader, k_splatInstanceSize,
+                (int)GsplatSettings.Instance.SplatInstanceSize);
+            cmd.SetComputeIntParam(mergeShader, k_indexCountPerInstance, (int)mesh.GetIndexCount(0));
+            cmd.SetComputeIntParam(mergeShader, k_startIndex, (int)mesh.GetIndexStart(0));
+            cmd.SetComputeIntParam(mergeShader, k_baseVertex, (int)mesh.GetBaseVertex(0));
+            cmd.SetComputeBufferParam(mergeShader, m_kernelBuildDrawArgs, k_counts, m_countsBuffer);
+            cmd.SetComputeBufferParam(mergeShader, m_kernelBuildDrawArgs, k_globalVisibleCountBuffer,
+                m_globalVisibleCountBuffer);
+            cmd.SetComputeBufferParam(mergeShader, m_kernelBuildDrawArgs, k_globalDrawArgs, m_globalDrawArgs);
+            cmd.DispatchCompute(mergeShader, m_kernelBuildDrawArgs, 1, 1, 1);
         }
 
         // -----------------------------------------------------------------------
@@ -464,7 +525,7 @@ namespace Gsplat
             // m_globalBuffersDirty: the active renderer set changed and the next DispatchSort
             // hasn't validated/rebuilt the buffers yet. Drawing now would bind stale buffers
             // (under URP, DrawAllIfEnabled fires before DispatchSort each frame).
-            if (m_globalBuffersDirty || m_globalOrderBuffer == null || m_totalRemainingCount == 0) return;
+            if (m_globalBuffersDirty || m_globalOrderBuffer == null) return;
 
             // Bind buffers via a MaterialPropertyBlock rather than on the material itself, so
             // each queued draw captures its own bindings and multiple cameras (Game + SceneView,
@@ -477,7 +538,8 @@ namespace Gsplat
             m_globalPropertyBlock.SetBuffer(k_rendererOffsetsProp, m_rendererOffsetsBuffer);
             m_globalPropertyBlock.SetBuffer(k_rendererTransformsProp, m_rendererTransformsBuffer);
             m_globalPropertyBlock.SetBuffer(k_rendererParamsProp, m_rendererParamsBuffer);
-            m_globalPropertyBlock.SetInteger(k_totalSplatCount, (int)m_totalRemainingCount);
+            m_globalPropertyBlock.SetInteger(k_useVisibleCount, 1);
+            m_globalPropertyBlock.SetBuffer(k_visibleCountBuffer, m_globalVisibleCountBuffer);
             m_globalPropertyBlock.SetInteger(k_splatInstanceSize, (int)GsplatSettings.Instance.SplatInstanceSize);
 
             if (m_globalSHBands >= 1)
@@ -495,8 +557,7 @@ namespace Gsplat
                 matProps = m_globalPropertyBlock
             };
 
-            int instances = Mathf.CeilToInt(m_totalRemainingCount / (float)GsplatSettings.Instance.SplatInstanceSize);
-            Graphics.RenderMeshPrimitives(rp, GsplatSettings.Instance.Mesh, 0, instances);
+            Graphics.RenderMeshIndirect(rp, GsplatSettings.Instance.Mesh, m_globalDrawArgs);
         }
 
 
@@ -523,6 +584,12 @@ namespace Gsplat
             m_rendererTransformsBuffer = null;
             m_rendererParamsBuffer?.Dispose();
             m_rendererParamsBuffer = null;
+            m_countsBuffer?.Dispose();
+            m_countsBuffer = null;
+            m_globalVisibleCountBuffer?.Dispose();
+            m_globalVisibleCountBuffer = null;
+            m_globalDrawArgs?.Dispose();
+            m_globalDrawArgs = null;
             // Scratch buffers are rebuilt every time global buffers are rebuilt,
             // so dispose them here too to avoid leaking when renderer count shrinks.
             m_packScratchOrders?.Dispose();
