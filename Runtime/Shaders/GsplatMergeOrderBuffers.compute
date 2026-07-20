@@ -22,6 +22,8 @@
 #define GROUP_SIZE 256
 #define FLOAT_MAX  3.402823466e+38f
 
+#include "UnityIndirect.cginc"
+
 #pragma kernel PackRendererOrders
 #pragma kernel MergeTwo
 #pragma kernel MergeTwoWithDepth
@@ -31,7 +33,7 @@
 RWStructuredBuffer<uint> _Counts;
 ByteAddressBuffer _SrcCountBuffer;
 RWByteAddressBuffer _GlobalVisibleCountBuffer;
-RWByteAddressBuffer _GlobalDrawArgs;
+RWStructuredBuffer<IndirectDrawIndexedArgs> _GlobalDrawArgs;
 uint _UseSrcCountBuffer;
 uint _RendererIdx;
 uint _SrcCount;
@@ -54,11 +56,13 @@ void BuildDrawArgs(uint3 id : SV_DispatchThreadID)
 {
     uint count = _Counts[_OutputCountIndex];
     _GlobalVisibleCountBuffer.Store(0, count);
-    _GlobalDrawArgs.Store(0, _IndexCountPerInstance);
-    _GlobalDrawArgs.Store(4, (count + _SplatInstanceSize - 1u) / _SplatInstanceSize);
-    _GlobalDrawArgs.Store(8, _StartIndex);
-    _GlobalDrawArgs.Store(12, _BaseVertex);
-    _GlobalDrawArgs.Store(16, 0);
+    IndirectDrawIndexedArgs drawArgs;
+    drawArgs.indexCountPerInstance = _IndexCountPerInstance;
+    drawArgs.instanceCount = (count + _SplatInstanceSize - 1u) / _SplatInstanceSize;
+    drawArgs.startIndex = _StartIndex;
+    drawArgs.baseVertexIndex = _BaseVertex;
+    drawArgs.startInstance = 0;
+    _GlobalDrawArgs[0] = drawArgs;
 }
 
 // -----------------------------------------------------------------------

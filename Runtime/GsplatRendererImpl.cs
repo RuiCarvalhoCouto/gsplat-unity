@@ -305,8 +305,9 @@ namespace Gsplat
             m_candidateOrderResource = new CandidateOrderResource(m_candidateOrderBuffer);
             VisibleCountBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Raw, 1, sizeof(uint));
             SortDispatchArgs = new GraphicsBuffer(GraphicsBuffer.Target.IndirectArguments, 1, sizeof(uint) * 3);
-            DrawArgs = new GraphicsBuffer(GraphicsBuffer.Target.IndirectArguments, 1, sizeof(uint) * 5);
-            DrawArgs.SetData(new uint[5]);
+            DrawArgs = new GraphicsBuffer(GraphicsBuffer.Target.IndirectArguments, 1,
+                GraphicsBuffer.IndirectDrawIndexedArgs.size);
+            DrawArgs.SetData(new GraphicsBuffer.IndirectDrawIndexedArgs[1]);
             m_propertyBlock.SetBuffer(k_visibleCountBuffer, VisibleCountBuffer);
 
             CacheCullingKernels();

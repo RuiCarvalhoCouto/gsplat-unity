@@ -253,9 +253,10 @@ namespace Gsplat
                 { name = "Gsplat.VisibleCounts" };
             m_globalVisibleCountBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Raw, 1, sizeof(uint))
                 { name = "Gsplat.GlobalVisibleCount" };
-            m_globalDrawArgs = new GraphicsBuffer(GraphicsBuffer.Target.IndirectArguments, 1, sizeof(uint) * 5)
+            m_globalDrawArgs = new GraphicsBuffer(GraphicsBuffer.Target.IndirectArguments, 1,
+                GraphicsBuffer.IndirectDrawIndexedArgs.size)
                 { name = "Gsplat.GlobalDrawArgs" };
-            m_globalDrawArgs.SetData(new uint[5]);
+            m_globalDrawArgs.SetData(new GraphicsBuffer.IndirectDrawIndexedArgs[1]);
 
             if (m_globalSHBands >= 1)
                 m_globalSH1Buffer = new GraphicsBuffer(st, (int)m_totalSplatCount, sizeof(uint) * 2)

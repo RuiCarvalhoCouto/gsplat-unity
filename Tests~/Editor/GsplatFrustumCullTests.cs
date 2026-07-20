@@ -39,6 +39,10 @@ namespace Gsplat.Tests
             using var orderBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 3, sizeof(uint));
             using var depthBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 3, sizeof(float));
             using var countBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Raw, 1, sizeof(uint));
+            using var sortArgsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.IndirectArguments, 1,
+                sizeof(uint) * 3);
+            using var drawArgsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.IndirectArguments, 1,
+                GraphicsBuffer.IndirectDrawIndexedArgs.size);
 
             positionBuffer.SetData(positions);
             scaleBuffer.SetData(scales);
@@ -71,6 +75,24 @@ namespace Gsplat.Tests
             var visibleCount = new uint[1];
             countBuffer.GetData(visibleCount);
             Assert.That(visibleCount[0], Is.EqualTo(2));
+
+            int buildArgsKernel = shader.FindKernel("BuildArgs");
+            shader.SetInt("_SplatInstanceSize", 1);
+            shader.SetInt("_IndexCountPerInstance", 6);
+            shader.SetInt("_StartIndex", 2);
+            shader.SetInt("_BaseVertex", 3);
+            shader.SetBuffer(buildArgsKernel, "_VisibleCountBuffer", countBuffer);
+            shader.SetBuffer(buildArgsKernel, "_SortDispatchArgs", sortArgsBuffer);
+            shader.SetBuffer(buildArgsKernel, "_DrawArgs", drawArgsBuffer);
+            shader.Dispatch(buildArgsKernel, 1, 1, 1);
+
+            var drawArgs = new GraphicsBuffer.IndirectDrawIndexedArgs[1];
+            drawArgsBuffer.GetData(drawArgs);
+            Assert.That(drawArgs[0].indexCountPerInstance, Is.EqualTo(6));
+            Assert.That(drawArgs[0].instanceCount, Is.EqualTo(2));
+            Assert.That(drawArgs[0].startIndex, Is.EqualTo(2));
+            Assert.That(drawArgs[0].baseVertexIndex, Is.EqualTo(3));
+            Assert.That(drawArgs[0].startInstance, Is.Zero);
         }
     }
 }

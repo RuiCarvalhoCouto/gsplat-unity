@@ -3,6 +3,8 @@
 
 #define GROUP_SIZE 256
 
+#include "UnityIndirect.cginc"
+
 #pragma kernel Clear
 #pragma kernel CullUncompressed
 #pragma kernel CullSpark
@@ -32,7 +34,7 @@ RWStructuredBuffer<uint> _OrderBuffer;
 RWStructuredBuffer<float> _DepthBuffer;
 RWByteAddressBuffer _VisibleCountBuffer;
 RWByteAddressBuffer _SortDispatchArgs;
-RWByteAddressBuffer _DrawArgs;
+RWStructuredBuffer<IndirectDrawIndexedArgs> _DrawArgs;
 
 float4 DecodeQuatOctXyz88R8(uint encoded)
 {
@@ -154,9 +156,11 @@ void BuildArgs(uint3 id : SV_DispatchThreadID)
     _SortDispatchArgs.Store(4, 1);
     _SortDispatchArgs.Store(8, 1);
 
-    _DrawArgs.Store(0, _IndexCountPerInstance);
-    _DrawArgs.Store(4, (visibleCount + _SplatInstanceSize - 1u) / _SplatInstanceSize);
-    _DrawArgs.Store(8, _StartIndex);
-    _DrawArgs.Store(12, _BaseVertex);
-    _DrawArgs.Store(16, 0);
+    IndirectDrawIndexedArgs drawArgs;
+    drawArgs.indexCountPerInstance = _IndexCountPerInstance;
+    drawArgs.instanceCount = (visibleCount + _SplatInstanceSize - 1u) / _SplatInstanceSize;
+    drawArgs.startIndex = _StartIndex;
+    drawArgs.baseVertexIndex = _BaseVertex;
+    drawArgs.startInstance = 0;
+    _DrawArgs[0] = drawArgs;
 }
