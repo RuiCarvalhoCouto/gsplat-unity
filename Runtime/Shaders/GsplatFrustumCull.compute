@@ -62,12 +62,9 @@ float3x3 QuatToMat3(float4 r)
         y.w + z.x, z.w - y.x, 1.0 - y.y - z.z);
 }
 
-bool FootprintOverlapsView(float3 modelCenter, float3 scale, float4 quat, float4x4 matrixMV, float4x4 matrixP)
+bool ProjectedFootprintOverlapsView(float4 centerView4, float3 scale, float4 quat, float4x4 matrixMV,
+                                    float4x4 matrixP)
 {
-    float4 centerView4 = mul(matrixMV, float4(modelCenter, 1.0));
-    if (centerView4.z > 0.0)
-        return false;
-
     float3 centerView = centerView4.xyz / centerView4.w;
     float4 centerProj = mul(matrixP, centerView4);
 
@@ -99,6 +96,15 @@ bool FootprintOverlapsView(float3 modelCenter, float3 scale, float4 quat, float4
                      2.0 * min(sqrt(2.0 * lambda2), vmin));
     float2 clipExtent = maxL * centerProj.ww / _ViewportSize;
     return !any(abs(centerProj.xy) - clipExtent > centerProj.ww);
+}
+
+bool FootprintOverlapsView(float3 modelCenter, float3 scale, float4 quat, float4x4 matrixMV, float4x4 matrixP)
+{
+    float4 centerView4 = mul(matrixMV, float4(modelCenter, 1.0));
+    bool overlaps = false;
+    if (centerView4.z <= 0.0)
+        overlaps = ProjectedFootprintOverlapsView(centerView4, scale, quat, matrixMV, matrixP);
+    return overlaps;
 }
 
 void AppendIfVisible(uint candidateIndex, float3 position, float3 scale, float4 rotation)

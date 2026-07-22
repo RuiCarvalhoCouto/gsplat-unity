@@ -113,6 +113,8 @@ Test perspective and orthographic cameras. Compare enabled and disabled output a
 
 Use the Frame Debugger, GPU capture, or temporary local instrumentation to inspect the visible-count and indirect-argument buffers. Do not commit temporary instrumentation.
 
+For the Play Mode Scene View check, enable exactly one Game camera. Test multiple runtime cameras separately because each camera produces its own culling result.
+
 - [ ] With all splats visible, the GPU visible count equals the candidate splat count.
 - [ ] With part of the asset visible, the GPU visible count is greater than zero and below the candidate count.
 - [ ] With the asset fully outside the view, the GPU visible count is zero.
