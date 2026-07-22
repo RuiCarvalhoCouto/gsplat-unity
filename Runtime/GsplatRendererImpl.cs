@@ -194,7 +194,10 @@ namespace Gsplat
             m_orderTargetsCandidateBuffer = FrustumCullingActive;
         }
 
-        public void Cull(CommandBuffer cmd, in GsplatCameraInfo cameraInfo, Transform transform)
+        public void Cull(CommandBuffer cmd, Camera camera, Transform transform) =>
+            Cull(cmd, new GsplatCameraInfo(camera), transform);
+
+        internal void Cull(CommandBuffer cmd, in GsplatCameraInfo cameraInfo, Transform transform)
         {
             var cs = m_gsplatAsset.GsplatMaterial.FrustumCullShader;
 
