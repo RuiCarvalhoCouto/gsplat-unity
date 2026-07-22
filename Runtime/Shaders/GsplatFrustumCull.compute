@@ -9,6 +9,7 @@
 #pragma kernel CullUncompressed
 #pragma kernel CullSpark
 #pragma kernel BuildArgs
+#pragma multi_compile _ STEREO_INSTANCING_ON STEREO_MULTIVIEW_ON
 
 uint _CandidateCount;
 uint _UseCandidateOrder;
@@ -167,6 +168,10 @@ void BuildArgs(uint3 id : SV_DispatchThreadID)
     IndirectDrawIndexedArgs drawArgs;
     drawArgs.indexCountPerInstance = _IndexCountPerInstance;
     drawArgs.instanceCount = (visibleCount + _SplatInstanceSize - 1u) / _SplatInstanceSize;
+#if defined(STEREO_INSTANCING_ON)
+    // Indirect draws are not expanded automatically for instanced stereo.
+    drawArgs.instanceCount *= 2u;
+#endif
     drawArgs.startIndex = _StartIndex;
     drawArgs.baseVertexIndex = _BaseVertex;
     drawArgs.startInstance = 0;
