@@ -194,36 +194,25 @@ namespace Gsplat
             m_orderTargetsCandidateBuffer = FrustumCullingActive;
         }
 
-        public void Cull(CommandBuffer cmd, Camera camera, Transform transform)
+        public void Cull(CommandBuffer cmd, in GsplatCameraInfo cameraInfo, Transform transform)
         {
             var cs = m_gsplatAsset.GsplatMaterial.FrustumCullShader;
 
-            bool stereo = camera.stereoEnabled;
             Matrix4x4 matrixM = transform.localToWorldMatrix;
-            Matrix4x4 matrixMvDepth = camera.worldToCameraMatrix * matrixM;
-            Matrix4x4 matrixMv0 = (stereo
-                ? camera.GetStereoViewMatrix(Camera.StereoscopicEye.Left)
-                : camera.worldToCameraMatrix) * matrixM;
-            Matrix4x4 matrixP0 = GL.GetGPUProjectionMatrix(stereo
-                ? camera.GetStereoProjectionMatrix(Camera.StereoscopicEye.Left)
-                : camera.projectionMatrix, false);
-            Matrix4x4 matrixMv1 = stereo
-                ? camera.GetStereoViewMatrix(Camera.StereoscopicEye.Right) * matrixM
-                : matrixMv0;
-            Matrix4x4 matrixP1 = stereo
-                ? GL.GetGPUProjectionMatrix(camera.GetStereoProjectionMatrix(Camera.StereoscopicEye.Right), false)
-                : matrixP0;
+            Matrix4x4 matrixMvDepth = cameraInfo.SortViewMatrix * matrixM;
+            Matrix4x4 matrixMv0 = cameraInfo.ViewMatrix0 * matrixM;
+            Matrix4x4 matrixMv1 = cameraInfo.ViewMatrix1 * matrixM;
 
             cmd.SetComputeIntParam(cs, k_candidateCount, (int)m_remainingCount);
             cmd.SetComputeIntParam(cs, k_useCandidateOrder, m_cutoutsData.Length > 0 ? 1 : 0);
-            cmd.SetComputeIntParam(cs, k_eyeCount, stereo ? 2 : 1);
+            cmd.SetComputeIntParam(cs, k_eyeCount, cameraInfo.ViewCount);
             cmd.SetComputeVectorParam(cs, k_viewportSize,
-                new Vector4(Math.Max(1, camera.pixelWidth), Math.Max(1, camera.pixelHeight), 0, 0));
+                new Vector4(Math.Max(1, cameraInfo.ViewportSize.x), Math.Max(1, cameraInfo.ViewportSize.y), 0, 0));
             cmd.SetComputeMatrixParam(cs, k_matrixMv0, matrixMv0);
             cmd.SetComputeMatrixParam(cs, k_matrixMv1, matrixMv1);
             cmd.SetComputeMatrixParam(cs, k_matrixMvDepth, matrixMvDepth);
-            cmd.SetComputeMatrixParam(cs, k_matrixP0, matrixP0);
-            cmd.SetComputeMatrixParam(cs, k_matrixP1, matrixP1);
+            cmd.SetComputeMatrixParam(cs, k_matrixP0, cameraInfo.ProjectionMatrix0);
+            cmd.SetComputeMatrixParam(cs, k_matrixP1, cameraInfo.ProjectionMatrix1);
             cmd.SetComputeBufferParam(cs, m_kernelCullClear, k_visibleCountBuffer, VisibleCountBuffer);
             cmd.DispatchCompute(cs, m_kernelCullClear, 1, 1, 1);
 

@@ -195,6 +195,7 @@ Test the render modes currently advertised by the package. Unsupported combinati
 - [ ] BiRP multi-pass renders the correct visible subset in both eyes.
 - [ ] URP multi-pass renders the correct visible subset in both eyes.
 - [ ] URP Single Pass Instanced renders the correct visible subset in both eyes.
+- [ ] In Unity 6 URP, splats crossing each eye's left, right, top, and bottom edges match culling-disabled output.
 - [ ] A Gaussian visible only to the left eye is retained for both-eye rendering.
 - [ ] A Gaussian visible only to the right eye is retained for both-eye rendering.
 - [ ] A Gaussian outside both eye frusta is culled.

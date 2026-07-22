@@ -7,6 +7,7 @@
 
 #if GSPLAT_ENABLE_URP
 
+using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 #if UNITY_6000_0_OR_NEWER
@@ -33,8 +34,25 @@ namespace Gsplat
                 builder.SetRenderFunc(static (PassData data, UnsafeGraphContext context) =>
                 {
                     var commandBuffer = CommandBufferHelpers.GetNativeCommandBuffer(context.cmd);
-                    GsplatSorter.Instance.DispatchSort(commandBuffer, data.CameraData.camera);
+                    GsplatSorter.Instance.DispatchSort(commandBuffer, GetCameraInfo(data.CameraData));
                 });
+            }
+
+            static GsplatCameraInfo GetCameraInfo(UniversalCameraData cameraData)
+            {
+                if (!cameraData.xr.enabled)
+                    return new GsplatCameraInfo(cameraData.camera);
+
+                int viewCount = Mathf.Min(cameraData.xr.viewCount, 2);
+                Matrix4x4 view0 = cameraData.GetViewMatrix(0);
+                Matrix4x4 projection0 = GL.GetGPUProjectionMatrix(cameraData.GetProjectionMatrix(0), false);
+                Matrix4x4 view1 = viewCount > 1 ? cameraData.GetViewMatrix(1) : view0;
+                Matrix4x4 projection1 = viewCount > 1
+                    ? GL.GetGPUProjectionMatrix(cameraData.GetProjectionMatrix(1), false)
+                    : projection0;
+                Rect viewport = cameraData.xr.GetViewport(0);
+                return new GsplatCameraInfo(cameraData.camera, viewCount, viewport.size, view0, projection0,
+                    view1, projection1);
             }
 #else
             public CommandBuffer CommandBuffer;

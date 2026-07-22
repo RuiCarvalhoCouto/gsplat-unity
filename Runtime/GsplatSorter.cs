@@ -9,6 +9,49 @@ using UnityEngine.Rendering;
 
 namespace Gsplat
 {
+    readonly struct GsplatCameraInfo
+    {
+        public readonly int ViewCount;
+        public readonly Vector2 ViewportSize;
+        public readonly Matrix4x4 SortViewMatrix;
+        public readonly Matrix4x4 ViewMatrix0;
+        public readonly Matrix4x4 ViewMatrix1;
+        public readonly Matrix4x4 ProjectionMatrix0;
+        public readonly Matrix4x4 ProjectionMatrix1;
+
+        public GsplatCameraInfo(Camera camera)
+        {
+            bool stereo = camera.stereoEnabled;
+            ViewCount = stereo ? 2 : 1;
+            ViewportSize = new Vector2(camera.pixelWidth, camera.pixelHeight);
+            SortViewMatrix = camera.worldToCameraMatrix;
+            ViewMatrix0 = stereo
+                ? camera.GetStereoViewMatrix(Camera.StereoscopicEye.Left)
+                : camera.worldToCameraMatrix;
+            ProjectionMatrix0 = GL.GetGPUProjectionMatrix(stereo
+                ? camera.GetStereoProjectionMatrix(Camera.StereoscopicEye.Left)
+                : camera.projectionMatrix, false);
+            ViewMatrix1 = stereo
+                ? camera.GetStereoViewMatrix(Camera.StereoscopicEye.Right)
+                : ViewMatrix0;
+            ProjectionMatrix1 = stereo
+                ? GL.GetGPUProjectionMatrix(camera.GetStereoProjectionMatrix(Camera.StereoscopicEye.Right), false)
+                : ProjectionMatrix0;
+        }
+
+        public GsplatCameraInfo(Camera camera, int viewCount, Vector2 viewportSize, Matrix4x4 viewMatrix0,
+            Matrix4x4 projectionMatrix0, Matrix4x4 viewMatrix1, Matrix4x4 projectionMatrix1)
+        {
+            ViewCount = viewCount;
+            ViewportSize = viewportSize;
+            SortViewMatrix = camera.worldToCameraMatrix;
+            ViewMatrix0 = viewMatrix0;
+            ViewMatrix1 = viewMatrix1;
+            ProjectionMatrix0 = projectionMatrix0;
+            ProjectionMatrix1 = projectionMatrix1;
+        }
+    }
+
     public interface IGsplat
     {
         public Transform transform { get; }
@@ -199,12 +242,17 @@ namespace Gsplat
 
         public void DispatchSort(CommandBuffer cmd, Camera camera)
         {
+            DispatchSort(cmd, new GsplatCameraInfo(camera));
+        }
+
+        internal void DispatchSort(CommandBuffer cmd, in GsplatCameraInfo cameraInfo)
+        {
             cmd.BeginSample(k_cullPassName);
             foreach (var gs in m_activeGsplats)
             {
                 if (gs is GsplatRenderer { FrustumCullingActive: true } renderer &&
                     gs.ComputeSortRequired)
-                    renderer.Cull(cmd, camera);
+                    renderer.Cull(cmd, cameraInfo);
             }
             cmd.EndSample(k_cullPassName);
 
@@ -214,7 +262,7 @@ namespace Gsplat
             {
                 if (gs.RemainingCount <= 0 || !gs.ComputeSortRequired ||
                     gs is GsplatRenderer { FrustumCullingActive: true }) continue;
-                gs.ComputeDepth(cmd, camera.worldToCameraMatrix * gs.transform.localToWorldMatrix);
+                gs.ComputeDepth(cmd, cameraInfo.SortViewMatrix * gs.transform.localToWorldMatrix);
             }
 
             cmd.EndSample(k_depthPassName);
@@ -245,7 +293,7 @@ namespace Gsplat
                     DispatchArgs = gs is GsplatRenderer { FrustumCullingActive: true } indirectRenderer
                         ? indirectRenderer.SortDispatchArgs
                         : null,
-                    MatrixMv = camera.worldToCameraMatrix * gs.transform.localToWorldMatrix,
+                    MatrixMv = cameraInfo.SortViewMatrix * gs.transform.localToWorldMatrix,
                     InputKeys = res.InputKeys,
                     InputValues = res.OrderBuffer,
                     Resources = res.Resources

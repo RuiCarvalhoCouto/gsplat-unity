@@ -92,7 +92,8 @@ namespace Gsplat
         [HideInInspector] public uint CutoutsRefreshRate = 1;
 
         public void ComputeDepth(CommandBuffer cmd, Matrix4x4 matrixMv) => m_renderer.ComputeDepth(cmd, matrixMv);
-        internal void Cull(CommandBuffer cmd, Camera camera) => m_renderer.Cull(cmd, camera, transform);
+        internal void Cull(CommandBuffer cmd, in GsplatCameraInfo cameraInfo) =>
+            m_renderer.Cull(cmd, cameraInfo, transform);
 
         void OnEnable()
         {
