@@ -43,16 +43,20 @@ namespace Gsplat
                 if (!cameraData.xr.enabled)
                     return new GsplatCameraInfo(cameraData.camera);
 
-                int viewCount = Mathf.Min(cameraData.xr.viewCount, 2);
+                Rect viewport = cameraData.xr.GetViewport(0);
+                if (cameraData.xr.singlePassEnabled)
+                {
+                    var cullingParams = cameraData.xr.cullingParams;
+                    Matrix4x4 view = cullingParams.stereoViewMatrix;
+                    Matrix4x4 projection = GL.GetGPUProjectionMatrix(cullingParams.stereoProjectionMatrix, false);
+                    return new GsplatCameraInfo(cameraData.camera, 1, viewport.size, view, projection,
+                        view, projection);
+                }
+
                 Matrix4x4 view0 = cameraData.GetViewMatrix(0);
                 Matrix4x4 projection0 = GL.GetGPUProjectionMatrix(cameraData.GetProjectionMatrix(0), false);
-                Matrix4x4 view1 = viewCount > 1 ? cameraData.GetViewMatrix(1) : view0;
-                Matrix4x4 projection1 = viewCount > 1
-                    ? GL.GetGPUProjectionMatrix(cameraData.GetProjectionMatrix(1), false)
-                    : projection0;
-                Rect viewport = cameraData.xr.GetViewport(0);
-                return new GsplatCameraInfo(cameraData.camera, viewCount, viewport.size, view0, projection0,
-                    view1, projection1);
+                return new GsplatCameraInfo(cameraData.camera, 1, viewport.size, view0, projection0,
+                    view0, projection0);
             }
 #else
             public CommandBuffer CommandBuffer;
