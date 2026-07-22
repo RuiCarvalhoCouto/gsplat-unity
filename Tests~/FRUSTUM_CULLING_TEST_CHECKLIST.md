@@ -10,11 +10,12 @@ Run the full checklist on the latest installed patch of one pre-6.4 Unity 6 edit
 
 The compatibility subset consists of package import, C# and shader compilation, the EditMode test, one Spark render smoke test, one Uncompressed render smoke test, and a standalone player build.
 
-- [ ] Unity 2021.3 LTS compatibility subset passes.
-- [ ] Unity 2022.3 LTS compatibility subset passes.
-- [ ] Latest installed Unity 6 version below 6.4, preferably 6000.3, compatibility subset passes.
+- [ ] Unity 2021.3 ELTS compatibility subset passes. `N/A` -> Reason: Can't download Unity 2021 anymore without a license
+- [ ] Unity 2022.3 ELTS compatibility subset passes. `N/A` -> Reason: Can't download Unity 2022 anymore without a license
+- [ ] Unity 2023.1 compatibility subset passes.
+- [ ] Unity 6000.3 compatibility subset passes.
 - [ ] Unity 6000.4 compatibility subset passes.
-- [ ] Latest supported Unity 6 version above 6000.4, when available, compatibility subset passes.
+- [ ] Unity 6000.5 compatibility subset passes.
 
 ### 6.4 API boundary
 

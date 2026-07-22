@@ -41,19 +41,28 @@ cbuffer cbGpuSorting : register(b0)
     uint e_numKeys;
     uint e_radixShift;
     uint e_threadBlocks;
-    uint e_useDynamicCount;
 };
 
+#if defined(GSPLAT_DYNAMIC_COUNT)
 ByteAddressBuffer b_numKeys;
+#endif
 
 inline uint NumKeys()
 {
-    return e_useDynamicCount != 0 ? b_numKeys.Load(0) : e_numKeys;
+#if defined(GSPLAT_DYNAMIC_COUNT)
+    return b_numKeys.Load(0);
+#else
+    return e_numKeys;
+#endif
 }
 
 inline uint ThreadBlocks()
 {
-    return e_useDynamicCount != 0 ? max(1u, (NumKeys() + PART_SIZE - 1u) / PART_SIZE) : e_threadBlocks;
+#if defined(GSPLAT_DYNAMIC_COUNT)
+    return max(1u, (NumKeys() + PART_SIZE - 1u) / PART_SIZE);
+#else
+    return e_threadBlocks;
+#endif
 }
 
 #if defined(KEY_UINT)

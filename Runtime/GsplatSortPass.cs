@@ -18,7 +18,6 @@ namespace Gsplat
         static readonly int k_bPassHist = Shader.PropertyToID("b_passHist");
         static readonly int k_bGlobalHist = Shader.PropertyToID("b_globalHist");
         static readonly int k_eRadixShift = Shader.PropertyToID("e_radixShift");
-        static readonly int k_eUseDynamicCount = Shader.PropertyToID("e_useDynamicCount");
         static readonly int k_bNumKeys = Shader.PropertyToID("b_numKeys");
         static readonly int k_bSort = Shader.PropertyToID("b_sort");
         static readonly int k_bSortPayload = Shader.PropertyToID("b_sortPayload");
@@ -96,6 +95,9 @@ namespace Gsplat
         readonly int m_kernelUpsweep = -1;
         readonly int m_kernelScan = -1;
         readonly int m_kernelDownsweep = -1;
+        readonly int m_kernelUpsweepDynamic = -1;
+        readonly int m_kernelScanDynamic = -1;
+        readonly int m_kernelDownsweepDynamic = -1;
 
         readonly bool m_Valid;
 
@@ -111,20 +113,29 @@ namespace Gsplat
                 m_kernelUpsweep = cs.FindKernel("Upsweep");
                 m_kernelScan = cs.FindKernel("Scan");
                 m_kernelDownsweep = cs.FindKernel("Downsweep");
+                m_kernelUpsweepDynamic = cs.FindKernel("UpsweepDynamic");
+                m_kernelScanDynamic = cs.FindKernel("ScanDynamic");
+                m_kernelDownsweepDynamic = cs.FindKernel("DownsweepDynamic");
             }
 
             m_Valid = m_kernelInitPayload >= 0 &&
                       m_kernelInitDeviceRadixSort >= 0 &&
                       m_kernelUpsweep >= 0 &&
                       m_kernelScan >= 0 &&
-                      m_kernelDownsweep >= 0;
+                      m_kernelDownsweep >= 0 &&
+                      m_kernelUpsweepDynamic >= 0 &&
+                      m_kernelScanDynamic >= 0 &&
+                      m_kernelDownsweepDynamic >= 0;
             if (m_Valid)
             {
                 if (!cs.IsSupported(m_kernelInitPayload) ||
                     !cs.IsSupported(m_kernelInitDeviceRadixSort) ||
                     !cs.IsSupported(m_kernelUpsweep) ||
                     !cs.IsSupported(m_kernelScan) ||
-                    !cs.IsSupported(m_kernelDownsweep))
+                    !cs.IsSupported(m_kernelDownsweep) ||
+                    !cs.IsSupported(m_kernelUpsweepDynamic) ||
+                    !cs.IsSupported(m_kernelScanDynamic) ||
+                    !cs.IsSupported(m_kernelDownsweepDynamic))
                 {
                     m_Valid = false;
                 }
@@ -164,25 +175,27 @@ namespace Gsplat
             cmd.SetComputeIntParam(m_CS, k_eNumKeys, (int)numKeys);
             cmd.SetComputeIntParam(m_CS, k_eThreadBlocks, (int)threadBlocks);
             bool dynamicCount = args.CountBuffer != null && args.DispatchArgs != null;
-            cmd.SetComputeIntParam(m_CS, k_eUseDynamicCount, dynamicCount ? 1 : 0);
+            int kernelUpsweep = dynamicCount ? m_kernelUpsweepDynamic : m_kernelUpsweep;
+            int kernelScan = dynamicCount ? m_kernelScanDynamic : m_kernelScan;
+            int kernelDownsweep = dynamicCount ? m_kernelDownsweepDynamic : m_kernelDownsweep;
             if (dynamicCount)
             {
-                cmd.SetComputeBufferParam(m_CS, m_kernelUpsweep, k_bNumKeys, args.CountBuffer);
-                cmd.SetComputeBufferParam(m_CS, m_kernelScan, k_bNumKeys, args.CountBuffer);
-                cmd.SetComputeBufferParam(m_CS, m_kernelDownsweep, k_bNumKeys, args.CountBuffer);
+                cmd.SetComputeBufferParam(m_CS, kernelUpsweep, k_bNumKeys, args.CountBuffer);
+                cmd.SetComputeBufferParam(m_CS, kernelScan, k_bNumKeys, args.CountBuffer);
+                cmd.SetComputeBufferParam(m_CS, kernelDownsweep, k_bNumKeys, args.CountBuffer);
             }
 
             //Set statically located buffers
             //Upsweep
-            cmd.SetComputeBufferParam(m_CS, m_kernelUpsweep, k_bPassHist, args.Resources.PassHistBuffer);
-            cmd.SetComputeBufferParam(m_CS, m_kernelUpsweep, k_bGlobalHist, args.Resources.GlobalHistBuffer);
+            cmd.SetComputeBufferParam(m_CS, kernelUpsweep, k_bPassHist, args.Resources.PassHistBuffer);
+            cmd.SetComputeBufferParam(m_CS, kernelUpsweep, k_bGlobalHist, args.Resources.GlobalHistBuffer);
 
             //Scan
-            cmd.SetComputeBufferParam(m_CS, m_kernelScan, k_bPassHist, args.Resources.PassHistBuffer);
+            cmd.SetComputeBufferParam(m_CS, kernelScan, k_bPassHist, args.Resources.PassHistBuffer);
 
             //Downsweep
-            cmd.SetComputeBufferParam(m_CS, m_kernelDownsweep, k_bPassHist, args.Resources.PassHistBuffer);
-            cmd.SetComputeBufferParam(m_CS, m_kernelDownsweep, k_bGlobalHist, args.Resources.GlobalHistBuffer);
+            cmd.SetComputeBufferParam(m_CS, kernelDownsweep, k_bPassHist, args.Resources.PassHistBuffer);
+            cmd.SetComputeBufferParam(m_CS, kernelDownsweep, k_bGlobalHist, args.Resources.GlobalHistBuffer);
 
             //Clear the global histogram
             cmd.SetComputeBufferParam(m_CS, m_kernelInitDeviceRadixSort, k_bGlobalHist,
@@ -195,24 +208,24 @@ namespace Gsplat
                 cmd.SetComputeIntParam(m_CS, k_eRadixShift, (int)radixShift);
 
                 //Upsweep
-                cmd.SetComputeBufferParam(m_CS, m_kernelUpsweep, k_bSort, srcKeyBuffer);
+                cmd.SetComputeBufferParam(m_CS, kernelUpsweep, k_bSort, srcKeyBuffer);
                 if (dynamicCount)
-                    cmd.DispatchCompute(m_CS, m_kernelUpsweep, args.DispatchArgs, 0);
+                    cmd.DispatchCompute(m_CS, kernelUpsweep, args.DispatchArgs, 0);
                 else
-                    cmd.DispatchCompute(m_CS, m_kernelUpsweep, (int)threadBlocks, 1, 1);
+                    cmd.DispatchCompute(m_CS, kernelUpsweep, (int)threadBlocks, 1, 1);
 
                 // Scan
-                cmd.DispatchCompute(m_CS, m_kernelScan, (int)k_deviceRadixSortRadix, 1, 1);
+                cmd.DispatchCompute(m_CS, kernelScan, (int)k_deviceRadixSortRadix, 1, 1);
 
                 // Downsweep
-                cmd.SetComputeBufferParam(m_CS, m_kernelDownsweep, k_bSort, srcKeyBuffer);
-                cmd.SetComputeBufferParam(m_CS, m_kernelDownsweep, k_bSortPayload, srcPayloadBuffer);
-                cmd.SetComputeBufferParam(m_CS, m_kernelDownsweep, k_bAlt, dstKeyBuffer);
-                cmd.SetComputeBufferParam(m_CS, m_kernelDownsweep, k_bAltPayload, dstPayloadBuffer);
+                cmd.SetComputeBufferParam(m_CS, kernelDownsweep, k_bSort, srcKeyBuffer);
+                cmd.SetComputeBufferParam(m_CS, kernelDownsweep, k_bSortPayload, srcPayloadBuffer);
+                cmd.SetComputeBufferParam(m_CS, kernelDownsweep, k_bAlt, dstKeyBuffer);
+                cmd.SetComputeBufferParam(m_CS, kernelDownsweep, k_bAltPayload, dstPayloadBuffer);
                 if (dynamicCount)
-                    cmd.DispatchCompute(m_CS, m_kernelDownsweep, args.DispatchArgs, 0);
+                    cmd.DispatchCompute(m_CS, kernelDownsweep, args.DispatchArgs, 0);
                 else
-                    cmd.DispatchCompute(m_CS, m_kernelDownsweep, (int)threadBlocks, 1, 1);
+                    cmd.DispatchCompute(m_CS, kernelDownsweep, (int)threadBlocks, 1, 1);
 
                 // Swap
                 (srcKeyBuffer, dstKeyBuffer) = (dstKeyBuffer, srcKeyBuffer);

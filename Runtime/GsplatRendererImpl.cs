@@ -286,30 +286,28 @@ namespace Gsplat
             CutoutsBuffer = null;
             OrderSizeBuffer = new GraphicsBuffer(GraphicsBuffer.Target.IndirectArguments, 1, sizeof(uint));
             BoundsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 6, sizeof(uint));
+            VisibleCountBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Raw, 1, sizeof(uint));
+            VisibleCountBuffer.SetData(new uint[1]);
         }
 
         void CreatePropertyBlock()
         {
             m_propertyBlock ??= new MaterialPropertyBlock();
             m_propertyBlock.SetBuffer(k_orderBuffer, OrderBuffer);
-            if (VisibleCountBuffer != null)
-                m_propertyBlock.SetBuffer(k_visibleCountBuffer, VisibleCountBuffer);
+            m_propertyBlock.SetBuffer(k_visibleCountBuffer, VisibleCountBuffer);
         }
 
         void EnsureCullingResources()
         {
-            if (VisibleCountBuffer != null)
+            if (m_candidateOrderBuffer != null)
                 return;
 
             m_candidateOrderBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Append, (int)SplatCount, sizeof(uint));
             m_candidateOrderResource = new CandidateOrderResource(m_candidateOrderBuffer);
-            VisibleCountBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Raw, 1, sizeof(uint));
             SortDispatchArgs = new GraphicsBuffer(GraphicsBuffer.Target.IndirectArguments, 1, sizeof(uint) * 3);
             DrawArgs = new GraphicsBuffer(GraphicsBuffer.Target.IndirectArguments, 1,
                 GraphicsBuffer.IndirectDrawIndexedArgs.size);
             DrawArgs.SetData(new GraphicsBuffer.IndirectDrawIndexedArgs[1]);
-            m_propertyBlock.SetBuffer(k_visibleCountBuffer, VisibleCountBuffer);
-
             CacheCullingKernels();
         }
 

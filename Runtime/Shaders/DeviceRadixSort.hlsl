@@ -160,8 +160,7 @@ inline void GlobalHistExclusiveScanWLT16(uint gtid, uint waveSize)
     }
 }
 
-[numthreads(US_DIM, 1, 1)]
-void Upsweep(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
+void UpsweepImpl(uint3 gtid, uint3 gid)
 {
     //get the wave size
     const uint waveSize = getWaveSize();
@@ -425,8 +424,7 @@ inline void ExclusiveThreadBlockScanWLT16(uint gtid, uint gid, uint waveSize)
 }
 
 //Scan does not need flattening of gids
-[numthreads(SCAN_DIM, 1, 1)]
-void Scan(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
+void ScanImpl(uint3 gtid, uint3 gid)
 {
     const uint waveSize = getWaveSize();
     if (waveSize >= 16)
@@ -448,8 +446,7 @@ inline void LoadThreadBlockReductions(uint gtid, uint gid, uint exclusiveHistRed
     }
 }
 
-[numthreads(D_DIM, 1, 1)]
-void Downsweep(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
+void DownsweepImpl(uint3 gtid, uint3 gid)
 {
     KeyStruct keys;
     OffsetStruct offsets;

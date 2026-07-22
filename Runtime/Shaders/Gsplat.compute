@@ -19,6 +19,9 @@
 #pragma kernel Upsweep
 #pragma kernel Scan
 #pragma kernel Downsweep
+#pragma kernel UpsweepDynamic GSPLAT_DYNAMIC_COUNT
+#pragma kernel ScanDynamic GSPLAT_DYNAMIC_COUNT
+#pragma kernel DownsweepDynamic GSPLAT_DYNAMIC_COUNT
 
 // GPU sorting needs wave ops
 #pragma require wavebasic
@@ -35,4 +38,40 @@ void InitPayload(uint3 id : SV_DispatchThreadID)
         return;
 
     b_sortPayload[idx] = idx;
+}
+
+[numthreads(US_DIM, 1, 1)]
+void Upsweep(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
+{
+    UpsweepImpl(gtid, gid);
+}
+
+[numthreads(SCAN_DIM, 1, 1)]
+void Scan(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
+{
+    ScanImpl(gtid, gid);
+}
+
+[numthreads(D_DIM, 1, 1)]
+void Downsweep(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
+{
+    DownsweepImpl(gtid, gid);
+}
+
+[numthreads(US_DIM, 1, 1)]
+void UpsweepDynamic(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
+{
+    UpsweepImpl(gtid, gid);
+}
+
+[numthreads(SCAN_DIM, 1, 1)]
+void ScanDynamic(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
+{
+    ScanImpl(gtid, gid);
+}
+
+[numthreads(D_DIM, 1, 1)]
+void DownsweepDynamic(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
+{
+    DownsweepImpl(gtid, gid);
 }
