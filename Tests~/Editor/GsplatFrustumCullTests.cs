@@ -11,7 +11,7 @@ namespace Gsplat.Tests
         public void StaticSortDoesNotRequireDynamicCountBuffer()
         {
             var shader = AssetDatabase.LoadAssetAtPath<ComputeShader>(
-                "Packages/wu.yize.gsplat/Runtime/Shaders/Gsplat.compute");
+                "Packages/rui.couto.gsplat/Runtime/Shaders/Gsplat.compute");
             Assert.That(shader, Is.Not.Null);
 
             var sortPass = new GsplatSortPass(shader);
@@ -52,7 +52,7 @@ namespace Gsplat.Tests
         public void CullUncompressedRetainsOverlappingFootprintsOnly()
         {
             var shader = AssetDatabase.LoadAssetAtPath<ComputeShader>(
-                "Packages/wu.yize.gsplat/Runtime/Shaders/GsplatFrustumCull.compute");
+                "Packages/rui.couto.gsplat/Runtime/Shaders/GsplatFrustumCull.compute");
             Assert.That(shader, Is.Not.Null);
 
             var positions = new[]

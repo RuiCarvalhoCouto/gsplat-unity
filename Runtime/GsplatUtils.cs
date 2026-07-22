@@ -9,7 +9,7 @@ namespace Gsplat
 {
     public static class GsplatUtils
     {
-        public const string k_PackagePath = "Packages/wu.yize.gsplat/";
+        public const string k_PackagePath = "Packages/rui.couto.gsplat/";
         public static readonly Version k_Version = new("1.4.0");
 
         internal static ulong GetObjectId(UnityEngine.Object obj)

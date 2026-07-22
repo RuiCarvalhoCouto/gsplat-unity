@@ -139,6 +139,9 @@ namespace Gsplat
 
     public abstract class GsplatAsset : ScriptableObject
     {
+        // Keep each SetData below backend upload staging allocations used by large GPU resources.
+        const int k_MaxUploadBytesPerCall = 8 * 1024 * 1024;
+
         public uint SplatCount;
         // Pruned splat count during import time; SplatCount + PrunedSplatCount = splat count of the source file.
         public uint PrunedSplatCount;
@@ -177,6 +180,14 @@ namespace Gsplat
             if (resource.Uploaded) return Task.CompletedTask;
             resource.Uploaded = true;
             return _UploadDataAsync(resource);
+        }
+
+        protected int GetUploadBatchSize(uint uploadedCount, int maxBytesPerSplat)
+        {
+            uint remaining = SplatCount - uploadedCount;
+            uint configuredBatchSize = Math.Max(1u, GsplatSettings.Instance.UploadBatchSize);
+            uint maxBatchSize = (uint)Math.Max(1, k_MaxUploadBytesPerCall / maxBytesPerSplat);
+            return (int)Math.Min(remaining, Math.Min(configuredBatchSize, maxBatchSize));
         }
 
         public GraphicsBuffer UpdateCutoutsBuffer(GraphicsBuffer cutoutsBuffer, GsplatCutout.ShaderData[] cutoutsData)

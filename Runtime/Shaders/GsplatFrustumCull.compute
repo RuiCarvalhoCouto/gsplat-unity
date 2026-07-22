@@ -104,7 +104,9 @@ bool FootprintOverlapsView(float3 modelCenter, float3 scale, float4 quat, float4
 void AppendIfVisible(uint candidateIndex, float3 position, float3 scale, float4 rotation)
 {
     bool visible0 = FootprintOverlapsView(position, scale, rotation, _MatrixMV0, _MatrixP0);
-    bool visible1 = _EyeCount > 1 && FootprintOverlapsView(position, scale, rotation, _MatrixMV1, _MatrixP1);
+    bool visible1 = false;
+    if (_EyeCount > 1)
+        visible1 = FootprintOverlapsView(position, scale, rotation, _MatrixMV1, _MatrixP1);
     if (!visible0 && !visible1)
         return;
 

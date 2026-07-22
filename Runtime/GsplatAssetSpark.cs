@@ -78,15 +78,13 @@ namespace Gsplat
         protected override void _UploadData(GsplatResource resource)
         {
             var res = (GsplatResourceSpark)resource;
-            res.PackedSplatsBuffer.SetData(PackedSplats);
-            if (SHBands >= 1)
-                res.PackedSH1Buffer.SetData(PackedSH1);
-            if (SHBands >= 2)
-                res.PackedSH2Buffer.SetData(PackedSH2);
-            if (SHBands >= 3)
-                res.PackedSH3Buffer.SetData(PackedSH3);
-            if (SHBands >= 4)
-                res.PackedSH4Buffer.SetData(PackedSH4);
+            uint uploadedCount = 0;
+            while (uploadedCount < SplatCount)
+            {
+                int batchSize = GetUploadBatchSize(uploadedCount, sizeof(uint) * 4);
+                UploadBatch(res, uploadedCount, batchSize);
+                uploadedCount += (uint)batchSize;
+            }
         }
 
         protected override async Task _UploadDataAsync(GsplatResource resource)
@@ -94,25 +92,25 @@ namespace Gsplat
             var res = (GsplatResourceSpark)resource;
             while (res.UploadedCount < SplatCount)
             {
-                var batchSize = (int)Math.Min(GsplatSettings.Instance.UploadBatchSize, SplatCount - res.UploadedCount);
-                res.PackedSplatsBuffer.SetData(PackedSplats, (int)res.UploadedCount, (int)res.UploadedCount, batchSize);
-
-                if (SHBands >= 1)
-                    res.PackedSH1Buffer.SetData(PackedSH1, 2 * (int)res.UploadedCount, 2 * (int)res.UploadedCount,
-                        2 * batchSize);
-                if (SHBands >= 2)
-                    res.PackedSH2Buffer.SetData(PackedSH2, 4 * (int)res.UploadedCount, 4 * (int)res.UploadedCount,
-                        4 * batchSize);
-                if (SHBands >= 3)
-                    res.PackedSH3Buffer.SetData(PackedSH3, 4 * (int)res.UploadedCount, 4 * (int)res.UploadedCount,
-                        4 * batchSize);
-                if (SHBands >= 4)
-                    res.PackedSH4Buffer.SetData(PackedSH4, 4 * (int)res.UploadedCount, 4 * (int)res.UploadedCount,
-                        4 * batchSize);
-
+                int batchSize = GetUploadBatchSize(res.UploadedCount, sizeof(uint) * 4);
+                UploadBatch(res, res.UploadedCount, batchSize);
                 res.UploadedCount += (uint)batchSize;
                 await Task.Yield();
             }
+        }
+
+        void UploadBatch(GsplatResourceSpark res, uint uploadedCount, int batchSize)
+        {
+            int offset = (int)uploadedCount;
+            res.PackedSplatsBuffer.SetData(PackedSplats, offset, offset, batchSize);
+            if (SHBands >= 1)
+                res.PackedSH1Buffer.SetData(PackedSH1, 2 * offset, 2 * offset, 2 * batchSize);
+            if (SHBands >= 2)
+                res.PackedSH2Buffer.SetData(PackedSH2, 4 * offset, 4 * offset, 4 * batchSize);
+            if (SHBands >= 3)
+                res.PackedSH3Buffer.SetData(PackedSH3, 4 * offset, 4 * offset, 4 * batchSize);
+            if (SHBands >= 4)
+                res.PackedSH4Buffer.SetData(PackedSH4, 4 * offset, 4 * offset, 4 * batchSize);
         }
 
         public override void SetupMaterialPropertyBlock(MaterialPropertyBlock propertyBlock,

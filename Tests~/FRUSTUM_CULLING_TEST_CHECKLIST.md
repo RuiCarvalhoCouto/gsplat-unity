@@ -125,7 +125,8 @@ Use the Frame Debugger, GPU capture, or temporary local instrumentation to inspe
 - [ ] `Sort Always` updates culling every rendered frame.
 - [ ] `Sort Every N Frames` preserves its existing refresh behavior and refreshes immediately after sufficient camera movement.
 - [ ] `Cutouts Every N Sorts` preserves its existing refresh behavior.
-- [ ] Scene View and Game View can render in the same frame without sharing stale camera-specific visibility or indirect arguments.
+- [ ] During Play Mode, Scene View displays the Game camera's culling result; moving only the Scene camera does not recull the splats.
+- [ ] Outside Play Mode, Scene View continues to cull and sort from its own camera.
 - [ ] Two runtime cameras with different poses each render the correct visible subset.
 
 ## Cutout interaction
@@ -211,6 +212,7 @@ Test the render modes currently advertised by the package. Unsupported combinati
 - [ ] Enter and exit Play Mode repeatedly with domain reload enabled.
 - [ ] Enter and exit Play Mode repeatedly with domain reload disabled, if supported by the project.
 - [ ] `Async Upload` disabled loads and culls correctly.
+- [ ] `Async Upload` disabled loads the largest test asset without an oversized-upload warning, device removal, or Editor crash.
 - [ ] `Async Upload` enabled with `Render Before Upload Complete` enabled never reads beyond the uploaded count.
 - [ ] `Async Upload` enabled with `Render Before Upload Complete` disabled begins rendering correctly after upload completes.
 - [ ] Disable or destroy a renderer during async upload without an exception, stale draw, or resource leak.

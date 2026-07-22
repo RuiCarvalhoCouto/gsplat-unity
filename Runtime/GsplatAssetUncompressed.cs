@@ -48,12 +48,13 @@ namespace Gsplat
         protected override void _UploadData(GsplatResource resource)
         {
             var res = (GsplatResourceUncompressed)resource;
-            res.PositionBuffer.SetData(Positions);
-            res.ScaleBuffer.SetData(Scales);
-            res.RotationBuffer.SetData(Rotations);
-            res.ColorBuffer.SetData(Colors);
-            if (SHBands > 0)
-                res.SHBuffer.SetData(SHs);
+            uint uploadedCount = 0;
+            while (uploadedCount < SplatCount)
+            {
+                int batchSize = GetUploadBatchSize(uploadedCount, GetMaxBytesPerSplat());
+                UploadBatch(res, uploadedCount, batchSize);
+                uploadedCount += (uint)batchSize;
+            }
         }
 
         protected override async Task _UploadDataAsync(GsplatResource resource)
@@ -61,21 +62,32 @@ namespace Gsplat
             var res = (GsplatResourceUncompressed)resource;
             while (res.UploadedCount < SplatCount)
             {
-                var batchSize = (int)Math.Min(GsplatSettings.Instance.UploadBatchSize, SplatCount - res.UploadedCount);
-                res.PositionBuffer.SetData(Positions, (int)res.UploadedCount, (int)res.UploadedCount, batchSize);
-                res.ScaleBuffer.SetData(Scales, (int)res.UploadedCount, (int)res.UploadedCount, batchSize);
-                res.RotationBuffer.SetData(Rotations, (int)res.UploadedCount, (int)res.UploadedCount, batchSize);
-                res.ColorBuffer.SetData(Colors, (int)res.UploadedCount, (int)res.UploadedCount, batchSize);
-
-                if (SHBands > 0)
-                {
-                    var coefficientCount = GsplatUtils.SHBandsToCoefficientCount(SHBands);
-                    res.SHBuffer.SetData(SHs, coefficientCount * (int)res.UploadedCount,
-                        coefficientCount * (int)res.UploadedCount, coefficientCount * batchSize);
-                }
-
+                int batchSize = GetUploadBatchSize(res.UploadedCount, GetMaxBytesPerSplat());
+                UploadBatch(res, res.UploadedCount, batchSize);
                 res.UploadedCount += (uint)batchSize;
                 await Task.Yield();
+            }
+        }
+
+        int GetMaxBytesPerSplat()
+        {
+            int shBytes = GsplatUtils.SHBandsToCoefficientCount(SHBands) * Marshal.SizeOf(typeof(Vector3));
+            return Math.Max(Marshal.SizeOf(typeof(Vector4)), shBytes);
+        }
+
+        void UploadBatch(GsplatResourceUncompressed res, uint uploadedCount, int batchSize)
+        {
+            int offset = (int)uploadedCount;
+            res.PositionBuffer.SetData(Positions, offset, offset, batchSize);
+            res.ScaleBuffer.SetData(Scales, offset, offset, batchSize);
+            res.RotationBuffer.SetData(Rotations, offset, offset, batchSize);
+            res.ColorBuffer.SetData(Colors, offset, offset, batchSize);
+
+            if (SHBands > 0)
+            {
+                int coefficientCount = GsplatUtils.SHBandsToCoefficientCount(SHBands);
+                res.SHBuffer.SetData(SHs, coefficientCount * offset, coefficientCount * offset,
+                    coefficientCount * batchSize);
             }
         }
 

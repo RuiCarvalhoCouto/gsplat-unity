@@ -135,6 +135,10 @@ namespace Gsplat
         {
             if (cam.cameraType == CameraType.Preview)
                 return false;
+#if UNITY_EDITOR
+            if (Application.isPlaying && cam.cameraType == CameraType.SceneView)
+                return false;
+#endif
 
             m_activeGsplats.Clear();
             foreach (var gs in m_gsplats.Where(gs => gs is { isActiveAndEnabled: true, Valid: true }))
