@@ -12,10 +12,10 @@ The compatibility subset consists of package import, C# and shader compilation, 
 
 - [ ] Unity 2021.3 ELTS compatibility subset passes. `N/A` -> Reason: Can't download Unity 2021 anymore without a license
 - [ ] Unity 2022.3 ELTS compatibility subset passes. `N/A` -> Reason: Can't download Unity 2022 anymore without a license
-- [ ] Unity 2023.1 compatibility subset passes.
-- [ ] Unity 6000.3 compatibility subset passes.
-- [ ] Unity 6000.4 compatibility subset passes.
-- [ ] Unity 6000.5 compatibility subset passes.
+- [x] Unity 2023.1 compatibility subset passes.
+- [x] Unity 6000.3 compatibility subset passes.
+- [x] Unity 6000.4 compatibility subset passes.
+- [x] Unity 6000.5 compatibility subset passes.
 
 ### 6.4 API boundary
 
