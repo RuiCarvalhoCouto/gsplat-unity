@@ -118,6 +118,16 @@ namespace Gsplat.Tests
             countBuffer.GetData(visibleCount);
             Assert.That(visibleCount[0], Is.EqualTo(2));
 
+            shader.Dispatch(clearKernel, 1, 1, 1);
+            shader.SetInt("_EyeCount", 2);
+            shader.SetMatrix("_MatrixMV0", Matrix4x4.Translate(new Vector3(100, 0, 0)));
+            shader.SetMatrix("_MatrixMV1", Matrix4x4.identity);
+            shader.Dispatch(cullKernel, 1, 1, 1);
+
+            countBuffer.GetData(visibleCount);
+            Assert.That(visibleCount[0], Is.EqualTo(2),
+                "Candidates visible only to the second active view must be retained.");
+
             int buildArgsKernel = shader.FindKernel("BuildArgs");
             shader.SetInt("_SplatInstanceSize", 1);
             shader.SetInt("_IndexCountPerInstance", 6);

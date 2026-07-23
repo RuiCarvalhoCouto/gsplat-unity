@@ -63,16 +63,20 @@ float3x3 QuatToMat3(float4 r)
         y.w + z.x, z.w - y.x, 1.0 - y.y - z.z);
 }
 
-bool ProjectedFootprintOverlapsView(float4 centerView4, float3 scale, float4 quat, float4x4 matrixMV,
+void CalcCovariance(float3 scale, float4 quat, out float3 covA, out float3 covB)
+{
+    float3x3 rot = QuatToMat3(quat);
+    float3x3 m = transpose(float3x3(scale.x * rot[0], scale.y * rot[1], scale.z * rot[2]));
+    covA = float3(dot(m[0], m[0]), dot(m[0], m[1]), dot(m[0], m[2]));
+    covB = float3(dot(m[1], m[1]), dot(m[1], m[2]), dot(m[2], m[2]));
+}
+
+bool ProjectedFootprintOverlapsView(float4 centerView4, float3 covA, float3 covB, float4x4 matrixMV,
                                     float4x4 matrixP)
 {
     float3 centerView = centerView4.xyz / centerView4.w;
     float4 centerProj = mul(matrixP, centerView4);
 
-    float3x3 rot = QuatToMat3(quat);
-    float3x3 m = transpose(float3x3(scale.x * rot[0], scale.y * rot[1], scale.z * rot[2]));
-    float3 covA = float3(dot(m[0], m[0]), dot(m[0], m[1]), dot(m[0], m[2]));
-    float3 covB = float3(dot(m[1], m[1]), dot(m[1], m[2]), dot(m[2], m[2]));
     float3x3 vrk = float3x3(covA.x, covA.y, covA.z, covA.y, covB.x, covB.y, covA.z, covB.y, covB.z);
 
     float focal = _ViewportSize.x * matrixP[0][0];
@@ -99,22 +103,36 @@ bool ProjectedFootprintOverlapsView(float4 centerView4, float3 scale, float4 qua
     return !any(abs(centerProj.xy) - clipExtent > centerProj.ww);
 }
 
-bool FootprintOverlapsView(float3 modelCenter, float3 scale, float4 quat, float4x4 matrixMV, float4x4 matrixP)
+bool FootprintOverlapsActiveViews(float3 modelCenter, float3 scale, float4 quat)
 {
-    float4 centerView4 = mul(matrixMV, float4(modelCenter, 1.0));
-    bool overlaps = false;
-    if (centerView4.z <= 0.0)
-        overlaps = ProjectedFootprintOverlapsView(centerView4, scale, quat, matrixMV, matrixP);
-    return overlaps;
+    float4 modelCenter4 = float4(modelCenter, 1.0);
+    float4 centerView0 = mul(_MatrixMV0, modelCenter4);
+    float4 centerView1 = centerView0;
+    if (_EyeCount > 1)
+        centerView1 = mul(_MatrixMV1, modelCenter4);
+
+    bool canOverlap0 = centerView0.z <= 0.0;
+    bool canOverlap1 = _EyeCount > 1 && centerView1.z <= 0.0;
+    if (!canOverlap0 && !canOverlap1)
+        return false;
+
+    // Model covariance is view-independent; reuse it across all active views.
+    float3 covA;
+    float3 covB;
+    CalcCovariance(scale, quat, covA, covB);
+    if (canOverlap0)
+    {
+        if (ProjectedFootprintOverlapsView(centerView0, covA, covB, _MatrixMV0, _MatrixP0))
+            return true;
+    }
+    if (canOverlap1)
+        return ProjectedFootprintOverlapsView(centerView1, covA, covB, _MatrixMV1, _MatrixP1);
+    return false;
 }
 
 void AppendIfVisible(uint candidateIndex, float3 position, float3 scale, float4 rotation)
 {
-    bool visible0 = FootprintOverlapsView(position, scale, rotation, _MatrixMV0, _MatrixP0);
-    bool visible1 = false;
-    if (_EyeCount > 1)
-        visible1 = FootprintOverlapsView(position, scale, rotation, _MatrixMV1, _MatrixP1);
-    if (!visible0 && !visible1)
+    if (!FootprintOverlapsActiveViews(position, scale, rotation))
         return;
 
     uint outputIndex;
