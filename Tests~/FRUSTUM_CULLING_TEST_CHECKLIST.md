@@ -30,6 +30,8 @@ For each combination below: import the package; compile C#; import the culling, 
 
 Run on at least one pre-6.4 editor and one 6.4+ editor, using both D3D12 and Vulkan.
 
+- [ ] A newly added `GsplatRenderer` starts with frustum culling enabled.
+- [ ] Existing pre-feature scenes and prefabs, plus renderers with culling explicitly disabled, remain disabled after reload.
 - [ ] With culling disabled, rendering and the direct draw path match the feature baseline.
 - [ ] With all splats visible, the visible count equals the candidate count and output matches culling disabled.
 - [ ] With part of the asset visible, the visible count is between zero and the candidate count, with no edge popping.
@@ -60,17 +62,22 @@ Run on at least one pre-6.4 editor and one 6.4+ editor, using both D3D12 and Vul
 
 ## Performance A/B
 
-Use identical hardware, scene, scripted camera path, resolution, pipeline, graphics API, asset, SH degree, and quality settings. Capture without Deep Profile. Record CPU main-thread time, GPU frame time, culling time, sorting time, draw time, VRAM, GC allocations, and visible/candidate counts.
+Use identical hardware, scene, fixed camera or headset poses, resolution, pipeline, graphics API, asset, SH degree, and quality settings. Test all-visible, partially-visible, and fully-off-screen poses. Warm up each configuration before capture.
+
+At each pose, use `Window > Gsplat > Culling Diagnostics` to capture one culling-enabled sample. Record candidate count, visible count, and visible percentage, then close the diagnostics window before timed profiling.
+
+For each Unity-version and graphics-API combination below, capture three paired 30-second runs per pose after warm-up. Alternate order between pairs: disabled/enabled, enabled/disabled, disabled/enabled. Keep camera or headset pose fixed. Capture CPU and GPU profiler data separately when required. Compare medians, not individual peaks or FPS snapshots. Record CPU main-thread time, GPU frame time, culling time, sorting time, draw time, VRAM, and GC allocations. Do not use Deep Profile.
 
 - [ ] Capture paired culling-disabled and culling-enabled results on Unity 6000.3 D3D12 for all-visible, partially-visible, and fully-off-screen poses.
 - [ ] Capture the same paired poses on Unity 6000.3 Vulkan.
 - [ ] Capture the same paired poses on Unity 6000.5 D3D12.
 - [ ] Capture the same paired poses on Unity 6000.5 Vulkan.
 - [ ] Culling adds no per-frame managed allocation or GPU-to-CPU readback; all-visible overhead and additional VRAM are quantified.
-- [ ] Partially-visible and off-screen cases reduce sorting, drawing, or total GPU work, with no unexplained total-frame regression.
+- [ ] Partially-visible and off-screen cases show a repeatable median reduction in sorting, drawing, or total GPU work, with no unexplained total-frame regression.
 
 ## Release gate
 
 - [ ] Every applicable optimization-branch gate passes, and unsupported or unavailable combinations are recorded.
 - [ ] No unresolved crash, C# exception, shader error, graphics validation error, rendering corruption, stale indirect draw, or resource leak remains.
 - [ ] Visual differences are limited to removal of splats whose complete projected footprints are outside every active view, and performance claims are backed by captures.
+- [ ] Merge-request performance wording reports measured configurations and results without claiming a universal percentage or target frame rate.

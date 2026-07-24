@@ -1,6 +1,6 @@
 - [ ] Pass all tests in FRUSTUM_CULLING_TEST_CHECKLIST.md.
 - [ ] Delete FRUSTUM_CULLING_TEST_CHECKLIST.md.
-- [ ] Remove temporary culling diagnostics: `Editor/GsplatCullingDiagnosticsWindow.cs`, `Editor/GsplatCullingDiagnosticsWindow.cs.meta`, `Runtime/AssemblyInfo.cs`, and `Runtime/AssemblyInfo.cs.meta`.
 - [ ] Change back package.json and all of its references back to the original one.
 - [ ] Delete .gitattributes
 - [ ] Add to CHANGELOG.md, as well as Documentation.
+- [ ] Remove temporary culling diagnostics: `Editor/GsplatCullingDiagnosticsWindow.cs`, `Editor/GsplatCullingDiagnosticsWindow.cs.meta`, `Runtime/AssemblyInfo.cs`, and `Runtime/AssemblyInfo.cs.meta`.
