@@ -33,6 +33,10 @@ namespace Gsplat
         public bool GammaToLinear;
         [Tooltip("Filters splats whose projected footprint is outside the camera view before sorting and drawing.")]
         public bool EnableFrustumCulling;
+        [Tooltip(
+            "Shrinks spatial chunk bounds toward their Gaussian centers. 0 preserves conservative visibility; higher values can improve rejection at the cost of edge popping.")]
+        [Range(0, 1)]
+        public float ChunkCullingAggressiveness;
         public bool AsyncUpload;
         public bool RenderBeforeUploadComplete = true;
 
@@ -86,6 +90,8 @@ namespace Gsplat
         public bool ComputeCutoutsRequired => m_renderer.ComputeCutoutsRequired;
         internal bool FrustumCullingActive => m_renderer is { FrustumCullingActive: true };
         internal GraphicsBuffer VisibleCountBuffer => m_renderer?.VisibleCountBuffer;
+        internal GraphicsBuffer HierarchyCountsBuffer => m_renderer?.HierarchyCountsBuffer;
+        internal bool HierarchicalCullingActive => m_renderer is { HierarchicalCullingActive: true };
         internal GraphicsBuffer SortDispatchArgs => m_renderer?.SortDispatchArgs;
         public GsplatSortMode SortMode = GsplatSortMode.Always;
         [HideInInspector] public uint SortRefreshRate = 1;
@@ -93,7 +99,7 @@ namespace Gsplat
 
         public void ComputeDepth(CommandBuffer cmd, Matrix4x4 matrixMv) => m_renderer.ComputeDepth(cmd, matrixMv);
         internal void Cull(CommandBuffer cmd, in GsplatCameraInfo cameraInfo) =>
-            m_renderer.Cull(cmd, cameraInfo, transform);
+            m_renderer.Cull(cmd, cameraInfo, transform, ChunkCullingAggressiveness);
 
         void Reset()
         {

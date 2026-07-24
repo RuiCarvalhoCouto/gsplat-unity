@@ -92,6 +92,7 @@ namespace Gsplat
                     progressCallback?.Invoke("Reading splats", i / (float)splatCount);
             }
             swPack.Stop();
+            BuildSpatialHierarchy(progressCallback);
 
             return new SpzPhaseTimings
             {

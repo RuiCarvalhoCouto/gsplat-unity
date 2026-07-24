@@ -56,6 +56,8 @@ namespace Gsplat
         static readonly int k_matrixMv = Shader.PropertyToID("_MatrixMV");
         static readonly int k_depthBuffer = Shader.PropertyToID("_DepthBuffer");
         static readonly int k_orderBuffer = Shader.PropertyToID("_OrderBuffer");
+        static readonly int k_activeMaskBuffer = Shader.PropertyToID("_ActiveMaskBuffer");
+        static readonly int k_activeCountBuffer = Shader.PropertyToID("_ActiveCountBuffer");
 
         public override void Allocate()
         {
@@ -72,7 +74,7 @@ namespace Gsplat
 
         public override GsplatResource CreateResource()
         {
-            return new GsplatResourceSpark(SplatCount, SHBands);
+            return new GsplatResourceSpark(this);
         }
 
         protected override void _UploadData(GsplatResource resource)
@@ -118,6 +120,7 @@ namespace Gsplat
         {
             var cs = GsplatMaterial.InitOrderShader;
             m_kernelInitOrder = cs.FindKernel("InitOrder");
+            m_kernelInitCutoutMask = cs.FindKernel("InitCutoutMask");
 
             var res = (GsplatResourceSpark)resource;
             propertyBlock.SetBuffer(k_packedSplatsBuffer, res.PackedSplatsBuffer);
@@ -158,6 +161,23 @@ namespace Gsplat
             else
                 cs.DisableKeyword("UPDATE_BOUNDS");
             cs.Dispatch(m_kernelInitOrder, (int)GsplatUtils.DivRoundUp(res.UploadedCount, 1024), 1, 1);
+        }
+
+        public override void InitCutoutMask(GraphicsBuffer activeMaskBuffer, GraphicsBuffer activeCountBuffer,
+            GsplatResource resource, bool updateBounds)
+        {
+            var cs = GsplatMaterial.InitOrderShader;
+            var res = (GsplatResourceSpark)resource;
+            activeCountBuffer.SetData(new uint[1]);
+            cs.SetInt(k_splatCount, (int)res.UploadedCount);
+            cs.SetBuffer(m_kernelInitCutoutMask, k_packedSplatsBuffer, res.PackedSplatsBuffer);
+            cs.SetBuffer(m_kernelInitCutoutMask, k_activeMaskBuffer, activeMaskBuffer);
+            cs.SetBuffer(m_kernelInitCutoutMask, k_activeCountBuffer, activeCountBuffer);
+            if (updateBounds)
+                cs.EnableKeyword("UPDATE_BOUNDS");
+            else
+                cs.DisableKeyword("UPDATE_BOUNDS");
+            cs.Dispatch(m_kernelInitCutoutMask, (int)GsplatUtils.DivRoundUp(res.UploadedCount, 1024), 1, 1);
         }
 
         public override void LoadFromPly(string plyPath, ProgressCallback progressCallback = null,
@@ -285,6 +305,8 @@ namespace Gsplat
                 if (SHBands >= 4)
                     Array.Resize(ref PackedSH4, (int)w * 4);
             }
+
+            BuildSpatialHierarchy(progressCallback);
         }
 
         /// <summary>
@@ -376,8 +398,8 @@ namespace Gsplat
             return (quantU, quantV, angleInt);
         }
 
-        const float LN_SCALE_MIN = -12.0f;
-        const float LN_SCALE_MAX = 9.0f;
+        internal const float LN_SCALE_MIN = -12.0f;
+        internal const float LN_SCALE_MAX = 9.0f;
         const float LN_SCALE_ZERO = -30.0f;
         const float LN_SCALE_SCALE = 254.0f / (LN_SCALE_MAX - LN_SCALE_MIN);
         static readonly float SCALE_ZERO = (float)Math.Exp(LN_SCALE_ZERO);
@@ -419,6 +441,50 @@ namespace Gsplat
                 uPosZ | (uint)(quantU << 16) | (uint)(quantV << 24),
                 uScaleX | (uint)(uScaleY << 8) | (uint)(uScaleZ << 16) | (uint)(angleInt << 24)
             );
+        }
+
+        internal override void GetSpatialData(int index, out Vector3 position, out Vector3 scale,
+            out Vector4 rotation)
+        {
+            uint4 word = PackedSplats[index];
+            position = new Vector3(
+                Mathf.HalfToFloat((ushort)(word.y & 0xFFFFu)),
+                Mathf.HalfToFloat((ushort)(word.y >> 16)),
+                Mathf.HalfToFloat((ushort)(word.z & 0xFFFFu)));
+
+            uint encoded = ((word.z >> 16) & 0xFFFFu) | ((word.w >> 8) & 0xFF0000u);
+            Vector2 f = new Vector2(encoded & 0xFFu, (encoded >> 8) & 0xFFu) / 255.0f * 2.0f -
+                        Vector2.one;
+            Vector3 axis = new(f.x, f.y, 1.0f - Mathf.Abs(f.x) - Mathf.Abs(f.y));
+            float t = Mathf.Max(-axis.z, 0);
+            axis.x += axis.x >= 0 ? -t : t;
+            axis.y += axis.y >= 0 ? -t : t;
+            axis.Normalize();
+            float halfTheta = (encoded >> 16) / 255.0f * Mathf.PI * 0.5f;
+            rotation = new Vector4(axis.x * Mathf.Sin(halfTheta), axis.y * Mathf.Sin(halfTheta),
+                axis.z * Mathf.Sin(halfTheta), Mathf.Cos(halfTheta));
+
+            float scaleStep = (LN_SCALE_MAX - LN_SCALE_MIN) / 254.0f;
+            uint sx = word.w & 0xFFu;
+            uint sy = (word.w >> 8) & 0xFFu;
+            uint sz = (word.w >> 16) & 0xFFu;
+            scale = new Vector3(
+                sx == 0 ? 0 : Mathf.Exp(LN_SCALE_MIN + (sx - 1) * scaleStep),
+                sy == 0 ? 0 : Mathf.Exp(LN_SCALE_MIN + (sy - 1) * scaleStep),
+                sz == 0 ? 0 : Mathf.Exp(LN_SCALE_MIN + (sz - 1) * scaleStep));
+        }
+
+        internal override void ApplySpatialOrder(uint[] sourceAtDestination)
+        {
+            GsplatSpatialHierarchy.ReorderBlocks(PackedSplats, 1, sourceAtDestination);
+            if (SHBands >= 1)
+                GsplatSpatialHierarchy.ReorderBlocks(PackedSH1, 2, sourceAtDestination);
+            if (SHBands >= 2)
+                GsplatSpatialHierarchy.ReorderBlocks(PackedSH2, 4, sourceAtDestination);
+            if (SHBands >= 3)
+                GsplatSpatialHierarchy.ReorderBlocks(PackedSH3, 4, sourceAtDestination);
+            if (SHBands >= 4)
+                GsplatSpatialHierarchy.ReorderBlocks(PackedSH4, 4, sourceAtDestination);
         }
 
         /// <summary>
@@ -537,8 +603,8 @@ namespace Gsplat
         // ─── Binary import cache ───────────────────────────────────────────────────
 
         const uint CacheMagic = 0x43435347u; // "GSCC" little-endian
-        // v2: added optional PackedSH4 region (only present when SHBands == 4).
-        const uint CacheFormatVersion = 2u;
+        // v3: added spatial hierarchy metadata.
+        const uint CacheFormatVersion = 3u;
 
         /// <summary>
         /// Attempts to populate this asset's packed arrays from a previously saved cache
@@ -560,6 +626,12 @@ namespace Gsplat
                 SplatCount = br.ReadUInt32();
                 SHBands    = br.ReadByte();
                 br.ReadByte(); br.ReadByte(); br.ReadByte(); // 3-byte padding
+                SpatialChunkSize = br.ReadInt32();
+                int leafCount = br.ReadInt32();
+                int coarseCount = br.ReadInt32();
+                if (!GsplatSpatialHierarchy.IsValidChunkSize(SpatialChunkSize) ||
+                    leafCount < 0 || coarseCount < 0)
+                    return false;
 
                 var center = new Vector3(br.ReadSingle(), br.ReadSingle(), br.ReadSingle());
                 var size   = new Vector3(br.ReadSingle(), br.ReadSingle(), br.ReadSingle());
@@ -572,8 +644,12 @@ namespace Gsplat
                 if (SHBands >= 2) ReadExactBytes(fs, MemoryMarshal.AsBytes(PackedSH2.AsSpan()));
                 if (SHBands >= 3) ReadExactBytes(fs, MemoryMarshal.AsBytes(PackedSH3.AsSpan()));
                 if (SHBands >= 4) ReadExactBytes(fs, MemoryMarshal.AsBytes(PackedSH4.AsSpan()));
+                SpatialLeafNodes = new GsplatSpatialNode[leafCount];
+                SpatialCoarseNodes = new GsplatSpatialNode[coarseCount];
+                ReadExactBytes(fs, MemoryMarshal.AsBytes(SpatialLeafNodes.AsSpan()));
+                ReadExactBytes(fs, MemoryMarshal.AsBytes(SpatialCoarseNodes.AsSpan()));
 
-                return true;
+                return HasSpatialHierarchy;
             }
             catch
             {
@@ -597,6 +673,9 @@ namespace Gsplat
             bw.Write(SplatCount);
             bw.Write((byte)SHBands);
             bw.Write((byte)0); bw.Write((byte)0); bw.Write((byte)0); // 3-byte padding
+            bw.Write(SpatialChunkSize);
+            bw.Write(SpatialLeafNodes?.Length ?? 0);
+            bw.Write(SpatialCoarseNodes?.Length ?? 0);
 
             bw.Write(Bounds.center.x); bw.Write(Bounds.center.y); bw.Write(Bounds.center.z);
             bw.Write(Bounds.size.x);   bw.Write(Bounds.size.y);   bw.Write(Bounds.size.z);
@@ -606,6 +685,10 @@ namespace Gsplat
             if (SHBands >= 2) fs.Write(MemoryMarshal.AsBytes(PackedSH2.AsSpan()));
             if (SHBands >= 3) fs.Write(MemoryMarshal.AsBytes(PackedSH3.AsSpan()));
             if (SHBands >= 4) fs.Write(MemoryMarshal.AsBytes(PackedSH4.AsSpan()));
+            if (SpatialLeafNodes is { Length: > 0 })
+                fs.Write(MemoryMarshal.AsBytes(SpatialLeafNodes.AsSpan()));
+            if (SpatialCoarseNodes is { Length: > 0 })
+                fs.Write(MemoryMarshal.AsBytes(SpatialCoarseNodes.AsSpan()));
         }
 
         static void ReadExactBytes(Stream stream, Span<byte> buffer)

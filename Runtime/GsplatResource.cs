@@ -7,6 +7,39 @@ namespace Gsplat
     {
         public bool Uploaded;
         public uint UploadedCount;
+        public GraphicsBuffer SpatialLeafNodesBuffer { get; private set; }
+        public GraphicsBuffer SpatialCoarseNodesBuffer { get; private set; }
+        public int SpatialLeafCount { get; private set; }
+        public int SpatialCoarseCount { get; private set; }
+        public int SpatialChunkSize { get; private set; }
+        public bool HasSpatialHierarchy => SpatialLeafNodesBuffer != null && SpatialCoarseNodesBuffer != null;
+
+        protected void CreateSpatialHierarchy(GsplatAsset asset)
+        {
+            if (!asset.HasSpatialHierarchy)
+                return;
+
+            SpatialLeafCount = asset.SpatialLeafNodes.Length;
+            SpatialCoarseCount = asset.SpatialCoarseNodes.Length;
+            SpatialChunkSize = asset.SpatialChunkSize;
+            SpatialLeafNodesBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, SpatialLeafCount,
+                GsplatSpatialHierarchy.NodeStride);
+            SpatialLeafNodesBuffer.SetData(asset.SpatialLeafNodes);
+            SpatialCoarseNodesBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, SpatialCoarseCount,
+                GsplatSpatialHierarchy.NodeStride);
+            SpatialCoarseNodesBuffer.SetData(asset.SpatialCoarseNodes);
+        }
+
+        protected void DisposeSpatialHierarchy()
+        {
+            SpatialLeafNodesBuffer?.Dispose();
+            SpatialLeafNodesBuffer = null;
+            SpatialCoarseNodesBuffer?.Dispose();
+            SpatialCoarseNodesBuffer = null;
+            SpatialLeafCount = 0;
+            SpatialCoarseCount = 0;
+        }
+
         public abstract void Dispose();
     }
 
@@ -19,6 +52,17 @@ namespace Gsplat
         public GraphicsBuffer SHBuffer { get; private set; }
 
         public GsplatResourceUncompressed(uint splatCount, byte shBands)
+        {
+            CreateSplatBuffers(splatCount, shBands);
+        }
+
+        public GsplatResourceUncompressed(GsplatAsset asset)
+        {
+            CreateSplatBuffers(asset.SplatCount, asset.SHBands);
+            CreateSpatialHierarchy(asset);
+        }
+
+        void CreateSplatBuffers(uint splatCount, byte shBands)
         {
             if (splatCount == 0)
                 return;
@@ -47,6 +91,7 @@ namespace Gsplat
             ColorBuffer = null;
             SHBuffer?.Dispose();
             SHBuffer = null;
+            DisposeSpatialHierarchy();
         }
     }
 
@@ -58,7 +103,18 @@ namespace Gsplat
         public GraphicsBuffer PackedSH3Buffer { get; private set; }
         public GraphicsBuffer PackedSH4Buffer { get; private set; }
 
-        public GsplatResourceSpark(uint splatCount, byte shBands) : base()
+        public GsplatResourceSpark(uint splatCount, byte shBands)
+        {
+            CreateSplatBuffers(splatCount, shBands);
+        }
+
+        public GsplatResourceSpark(GsplatAsset asset)
+        {
+            CreateSplatBuffers(asset.SplatCount, asset.SHBands);
+            CreateSpatialHierarchy(asset);
+        }
+
+        void CreateSplatBuffers(uint splatCount, byte shBands)
         {
             if (splatCount == 0)
                 return;
@@ -90,6 +146,7 @@ namespace Gsplat
             PackedSH3Buffer = null;
             PackedSH4Buffer?.Dispose();
             PackedSH4Buffer = null;
+            DisposeSpatialHierarchy();
         }
     }
 }

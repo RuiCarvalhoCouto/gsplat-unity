@@ -2,22 +2,40 @@
 // SPDX-License-Identifier: MIT
 
 #define GROUP_SIZE 256
+#define COARSE_LEAF_COUNT 64
+#define NODE_FULLY_INSIDE 0x80000000u
 
 #include "UnityIndirect.cginc"
 
 #pragma kernel Clear
 #pragma kernel CullUncompressed
 #pragma kernel CullSpark
+#pragma kernel ClearHierarchy
+#pragma kernel CullCoarse
+#pragma kernel BuildLeafArgs
+#pragma kernel CullLeaves
+#pragma kernel BuildSplatArgs
+#pragma kernel ProcessHierarchyUncompressed
+#pragma kernel ProcessHierarchySpark
 #pragma kernel BuildArgs
 #pragma multi_compile _ STEREO_INSTANCING_ON STEREO_MULTIVIEW_ON
 
 uint _CandidateCount;
 uint _UseCandidateOrder;
+uint _UseActiveMask;
 uint _EyeCount;
 uint _SplatInstanceSize;
 uint _IndexCountPerInstance;
 uint _StartIndex;
 uint _BaseVertex;
+uint _UploadedCount;
+uint _LeafCount;
+uint _CoarseCount;
+uint _SpatialChunkSize;
+uint _GroupsPerLeaf;
+uint _ExactTest;
+uint _LeafListCountOffset;
+float _ChunkCullingAggressiveness;
 float2 _ViewportSize;
 float4x4 _MatrixMV0;
 float4x4 _MatrixMV1;
@@ -26,10 +44,27 @@ float4x4 _MatrixP0;
 float4x4 _MatrixP1;
 
 StructuredBuffer<uint> _CandidateOrderBuffer;
+StructuredBuffer<uint> _ActiveMaskBuffer;
 StructuredBuffer<float3> _PositionBuffer;
 StructuredBuffer<float3> _ScaleBuffer;
 StructuredBuffer<float4> _RotationBuffer;
 StructuredBuffer<uint4> _PackedSplatsBuffer;
+
+struct SpatialNode
+{
+    float4 centerMin;
+    float4 centerMax;
+    float4 footprintMin;
+    float4 footprintMax;
+};
+
+StructuredBuffer<SpatialNode> _LeafNodesBuffer;
+StructuredBuffer<SpatialNode> _CoarseNodesBuffer;
+RWStructuredBuffer<uint> _VisibleCoarseNodes;
+RWStructuredBuffer<uint> _FullLeafNodes;
+RWStructuredBuffer<uint> _IntersectLeafNodes;
+RWByteAddressBuffer _HierarchyCounts;
+RWByteAddressBuffer _HierarchyDispatchArgs;
 
 RWStructuredBuffer<uint> _OrderBuffer;
 RWStructuredBuffer<float> _DepthBuffer;
@@ -76,7 +111,6 @@ bool ProjectedFootprintOverlapsView(float4 centerView4, float3 covA, float3 covB
 {
     float3 centerView = centerView4.xyz / centerView4.w;
     float4 centerProj = mul(matrixP, centerView4);
-
     float3x3 vrk = float3x3(covA.x, covA.y, covA.z, covA.y, covB.x, covB.y, covA.z, covB.y, covB.z);
 
     float focal = _ViewportSize.x * matrixP[0][0];
@@ -116,29 +150,82 @@ bool FootprintOverlapsActiveViews(float3 modelCenter, float3 scale, float4 quat)
     if (!canOverlap0 && !canOverlap1)
         return false;
 
-    // Model covariance is view-independent; reuse it across all active views.
     float3 covA;
     float3 covB;
     CalcCovariance(scale, quat, covA, covB);
-    if (canOverlap0)
-    {
-        if (ProjectedFootprintOverlapsView(centerView0, covA, covB, _MatrixMV0, _MatrixP0))
-            return true;
-    }
-    if (canOverlap1)
-        return ProjectedFootprintOverlapsView(centerView1, covA, covB, _MatrixMV1, _MatrixP1);
-    return false;
+    if (canOverlap0 &&
+        ProjectedFootprintOverlapsView(centerView0, covA, covB, _MatrixMV0, _MatrixP0))
+        return true;
+    return canOverlap1 &&
+           ProjectedFootprintOverlapsView(centerView1, covA, covB, _MatrixMV1, _MatrixP1);
 }
 
-void AppendIfVisible(uint candidateIndex, float3 position, float3 scale, float4 rotation)
+void AppendVisible(uint splatId, float3 position)
 {
-    if (!FootprintOverlapsActiveViews(position, scale, rotation))
-        return;
-
     uint outputIndex;
     _VisibleCountBuffer.InterlockedAdd(0, 1, outputIndex);
-    _OrderBuffer[outputIndex] = candidateIndex;
+    _OrderBuffer[outputIndex] = splatId;
     _DepthBuffer[outputIndex] = mul(_MatrixMVDepth, float4(position, 1.0)).z;
+}
+
+void AppendIfVisible(uint splatId, float3 position, float3 scale, float4 rotation)
+{
+    if (FootprintOverlapsActiveViews(position, scale, rotation))
+        AppendVisible(splatId, position);
+}
+
+float PlaneDistance(float4 plane, float3 center, float3 extents)
+{
+    return dot(plane.xyz, center) + plane.w + dot(abs(plane.xyz), extents);
+}
+
+float PlaneInsideDistance(float4 plane, float3 center, float3 extents)
+{
+    return dot(plane.xyz, center) + plane.w - dot(abs(plane.xyz), extents);
+}
+
+uint ClassifyNodeForView(SpatialNode node, float4x4 matrixMV, float4x4 matrixP)
+{
+    float3 boundsMin = lerp(node.footprintMin.xyz, node.centerMin.xyz, _ChunkCullingAggressiveness);
+    float3 boundsMax = lerp(node.footprintMax.xyz, node.centerMax.xyz, _ChunkCullingAggressiveness);
+    float3 center = (boundsMin + boundsMax) * 0.5;
+    float3 extents = (boundsMax - boundsMin) * 0.5;
+    float4x4 matrixMVP = mul(matrixP, matrixMV);
+
+    // Two-pixel side margin covers screen-space covariance blur at view edges.
+    float2 margin = 4.0 / max(_ViewportSize, 1.0);
+    float4 planes[5] =
+    {
+        matrixMVP[3] * (1.0 + margin.x) + matrixMVP[0],
+        matrixMVP[3] * (1.0 + margin.x) - matrixMVP[0],
+        matrixMVP[3] * (1.0 + margin.y) + matrixMVP[1],
+        matrixMVP[3] * (1.0 + margin.y) - matrixMVP[1],
+        -matrixMV[2]
+    };
+
+    bool fullyInside = true;
+    [unroll]
+    for (uint i = 0; i < 5; ++i)
+    {
+        if (PlaneDistance(planes[i], center, extents) < 0.0)
+            return 0;
+        fullyInside = fullyInside && PlaneInsideDistance(planes[i], center, extents) >= 0.0;
+    }
+    return fullyInside ? 2 : 1;
+}
+
+uint ClassifyNode(SpatialNode node)
+{
+    uint view0 = ClassifyNodeForView(node, _MatrixMV0, _MatrixP0);
+    if (view0 == 2)
+        return 2;
+    if (_EyeCount <= 1)
+        return view0;
+
+    uint view1 = ClassifyNodeForView(node, _MatrixMV1, _MatrixP1);
+    if (view1 == 2)
+        return 2;
+    return view0 == 0 && view1 == 0 ? 0 : 1;
 }
 
 [numthreads(1, 1, 1)]
@@ -175,6 +262,140 @@ void CullSpark(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(1, 1, 1)]
+void ClearHierarchy(uint3 id : SV_DispatchThreadID)
+{
+    _VisibleCountBuffer.Store(0, 0);
+    _HierarchyCounts.Store(0, 0);
+    _HierarchyCounts.Store(4, 0);
+    _HierarchyCounts.Store(8, 0);
+    _HierarchyCounts.Store(12, 0);
+}
+
+[numthreads(64, 1, 1)]
+void CullCoarse(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _CoarseCount)
+        return;
+    uint classification = ClassifyNode(_CoarseNodesBuffer[id.x]);
+    if (classification == 0)
+        return;
+    uint outputIndex;
+    _HierarchyCounts.InterlockedAdd(0, 1, outputIndex);
+    _VisibleCoarseNodes[outputIndex] = id.x | (classification == 2 ? NODE_FULLY_INSIDE : 0);
+}
+
+[numthreads(1, 1, 1)]
+void BuildLeafArgs(uint3 id : SV_DispatchThreadID)
+{
+    uint count = _HierarchyCounts.Load(0);
+    _HierarchyDispatchArgs.Store(0, max(1u, count));
+    _HierarchyDispatchArgs.Store(4, 1);
+    _HierarchyDispatchArgs.Store(8, 1);
+}
+
+[numthreads(COARSE_LEAF_COUNT, 1, 1)]
+void CullLeaves(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
+{
+    uint coarseCount = _HierarchyCounts.Load(0);
+    if (groupId.x >= coarseCount)
+        return;
+    uint encodedCoarse = _VisibleCoarseNodes[groupId.x];
+    uint leafId = (encodedCoarse & ~NODE_FULLY_INSIDE) * COARSE_LEAF_COUNT + threadId.x;
+    if (leafId >= _LeafCount)
+        return;
+
+    uint classification = (encodedCoarse & NODE_FULLY_INSIDE) != 0
+        ? 2
+        : ClassifyNode(_LeafNodesBuffer[leafId]);
+    if (classification == 0)
+        return;
+
+    uint outputIndex;
+    if (classification == 2)
+    {
+        _HierarchyCounts.InterlockedAdd(4, 1, outputIndex);
+        _FullLeafNodes[outputIndex] = leafId;
+    }
+    else
+    {
+        _HierarchyCounts.InterlockedAdd(8, 1, outputIndex);
+        _IntersectLeafNodes[outputIndex] = leafId;
+    }
+}
+
+[numthreads(1, 1, 1)]
+void BuildSplatArgs(uint3 id : SV_DispatchThreadID)
+{
+    uint fullCount = _HierarchyCounts.Load(4);
+    uint intersectCount = _HierarchyCounts.Load(8);
+    _HierarchyDispatchArgs.Store(12, max(1u, fullCount * _GroupsPerLeaf));
+    _HierarchyDispatchArgs.Store(16, 1);
+    _HierarchyDispatchArgs.Store(20, 1);
+    _HierarchyDispatchArgs.Store(24, max(1u, intersectCount * _GroupsPerLeaf));
+    _HierarchyDispatchArgs.Store(28, 1);
+    _HierarchyDispatchArgs.Store(32, 1);
+}
+
+bool GetHierarchySplatId(uint3 groupId, uint3 threadId, out uint splatId)
+{
+    uint leafCount = _HierarchyCounts.Load(_LeafListCountOffset);
+    uint listIndex = groupId.x / _GroupsPerLeaf;
+    if (listIndex >= leafCount)
+    {
+        splatId = 0;
+        return false;
+    }
+    uint leafId = _ExactTest != 0 ? _IntersectLeafNodes[listIndex] : _FullLeafNodes[listIndex];
+    uint localIndex = (groupId.x % _GroupsPerLeaf) * GROUP_SIZE + threadId.x;
+    splatId = leafId * _SpatialChunkSize + localIndex;
+    return localIndex < _SpatialChunkSize && splatId < _UploadedCount &&
+           (_UseActiveMask == 0 || _ActiveMaskBuffer[splatId] != 0);
+}
+
+[numthreads(GROUP_SIZE, 1, 1)]
+void ProcessHierarchyUncompressed(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
+{
+    uint splatId;
+    if (!GetHierarchySplatId(groupId, threadId, splatId))
+        return;
+    float3 position = _PositionBuffer[splatId];
+    if (_ExactTest != 0)
+    {
+        uint unused;
+        _HierarchyCounts.InterlockedAdd(12, 1, unused);
+        AppendIfVisible(splatId, position, _ScaleBuffer[splatId], _RotationBuffer[splatId]);
+    }
+    else
+        AppendVisible(splatId, position);
+}
+
+[numthreads(GROUP_SIZE, 1, 1)]
+void ProcessHierarchySpark(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
+{
+    uint splatId;
+    if (!GetHierarchySplatId(groupId, threadId, splatId))
+        return;
+    uint4 word = _PackedSplatsBuffer[splatId];
+    float3 position = float3(f16tof32(word.y & 0xFFFFu), f16tof32(word.y >> 16u), f16tof32(word.z & 0xFFFFu));
+    if (_ExactTest == 0)
+    {
+        AppendVisible(splatId, position);
+        return;
+    }
+
+    uint unused;
+    _HierarchyCounts.InterlockedAdd(12, 1, unused);
+    uint3 encodedScale = uint3(word.w & 0xFFu, (word.w >> 8u) & 0xFFu, (word.w >> 16u) & 0xFFu);
+    float scaleStep = 21.0 / 254.0;
+    float3 scale = float3(
+        encodedScale.x == 0 ? 0.0 : exp(-12.0 + float(encodedScale.x - 1u) * scaleStep),
+        encodedScale.y == 0 ? 0.0 : exp(-12.0 + float(encodedScale.y - 1u) * scaleStep),
+        encodedScale.z == 0 ? 0.0 : exp(-12.0 + float(encodedScale.z - 1u) * scaleStep));
+    uint encodedRotation = ((word.z >> 16u) & 0xFFFFu) | ((word.w >> 8u) & 0xFF0000u);
+    AppendIfVisible(splatId, position, scale, DecodeQuatOctXyz88R8(encodedRotation));
+}
+
+[numthreads(1, 1, 1)]
 void BuildArgs(uint3 id : SV_DispatchThreadID)
 {
     uint visibleCount = _VisibleCountBuffer.Load(0);
@@ -187,7 +408,6 @@ void BuildArgs(uint3 id : SV_DispatchThreadID)
     drawArgs.indexCountPerInstance = _IndexCountPerInstance;
     drawArgs.instanceCount = (visibleCount + _SplatInstanceSize - 1u) / _SplatInstanceSize;
 #if defined(STEREO_INSTANCING_ON)
-    // Indirect draws are not expanded automatically for instanced stereo.
     drawArgs.instanceCount *= 2u;
 #endif
     drawArgs.startIndex = _StartIndex;

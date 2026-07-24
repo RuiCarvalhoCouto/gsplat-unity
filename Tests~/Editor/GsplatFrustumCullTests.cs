@@ -1,4 +1,5 @@
 using NUnit.Framework;
+using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -15,6 +16,7 @@ namespace Gsplat.Tests
             {
                 var renderer = gameObject.AddComponent<GsplatRenderer>();
                 Assert.That(renderer.EnableFrustumCulling, Is.True);
+                Assert.That(renderer.ChunkCullingAggressiveness, Is.Zero);
             }
             finally
             {
@@ -43,6 +45,91 @@ namespace Gsplat.Tests
             {
                 Object.DestroyImmediate(sourceObject);
                 Object.DestroyImmediate(destinationObject);
+            }
+        }
+
+        [Test]
+        public void SpatialHierarchyReordersWholeSplatRecords()
+        {
+            var asset = ScriptableObject.CreateInstance<GsplatAssetUncompressed>();
+            try
+            {
+                const int count = 257;
+                asset.SplatCount = count;
+                asset.SHBands = 1;
+                asset.SpatialChunkSize = 128;
+                asset.Allocate();
+                var expectedColors = new Dictionary<Vector3, Vector4>();
+                for (int i = 0; i < count; ++i)
+                {
+                    var position = new Vector3((i * 37) % count, (i * 17) % 23, (i * 11) % 7);
+                    var color = new Vector4(i, i + 0.25f, i + 0.5f, 1);
+                    asset.Positions[i] = position;
+                    asset.Colors[i] = color;
+                    asset.Scales[i] = Vector3.one * (i + 1);
+                    asset.Rotations[i] = new Vector4(1, 0, 0, 0);
+                    for (int coefficient = 0; coefficient < 3; ++coefficient)
+                        asset.SHs[i * 3 + coefficient] = new Vector3(i, coefficient, -i);
+                    expectedColors.Add(position, color);
+                }
+
+                asset.BuildSpatialHierarchy();
+
+                Assert.That(asset.HasSpatialHierarchy, Is.True);
+                Assert.That(asset.SpatialLeafNodes.Length, Is.EqualTo(3));
+                Assert.That(asset.SpatialCoarseNodes.Length, Is.EqualTo(1));
+                for (int i = 0; i < count; ++i)
+                {
+                    Assert.That(asset.Colors[i], Is.EqualTo(expectedColors[asset.Positions[i]]));
+                    Assert.That(asset.Scales[i], Is.EqualTo(Vector3.one * (asset.Colors[i].x + 1)));
+                    for (int coefficient = 0; coefficient < 3; ++coefficient)
+                        Assert.That(asset.SHs[i * 3 + coefficient],
+                            Is.EqualTo(new Vector3(asset.Colors[i].x, coefficient, -asset.Colors[i].x)));
+                }
+            }
+            finally
+            {
+                Object.DestroyImmediate(asset);
+            }
+        }
+
+        [Test]
+        public void SpatialHierarchyBoundsContainGaussianFootprints()
+        {
+            var asset = ScriptableObject.CreateInstance<GsplatAssetUncompressed>();
+            try
+            {
+                asset.SplatCount = 2;
+                asset.SpatialChunkSize = 128;
+                asset.Allocate();
+                asset.Positions[0] = new Vector3(-2, 1, 0);
+                asset.Positions[1] = new Vector3(3, -1, 2);
+                asset.Scales[0] = new Vector3(1, 2, 3);
+                asset.Scales[1] = new Vector3(0.5f, 0.25f, 0.75f);
+                asset.Rotations[0] = new Vector4(1, 0, 0, 0);
+                asset.Rotations[1] = new Vector4(1, 0, 0, 0);
+
+                asset.BuildSpatialHierarchy();
+
+                var leaf = asset.SpatialLeafNodes[0];
+                for (int i = 0; i < 2; ++i)
+                {
+                    Vector3 extent =
+                        GsplatSpatialHierarchy.CalculateFootprintExtent(asset.Scales[i], asset.Rotations[i]);
+                    Vector3 footprintMin = asset.Positions[i] - extent;
+                    Vector3 footprintMax = asset.Positions[i] + extent;
+                    for (int axis = 0; axis < 3; ++axis)
+                    {
+                        Assert.That(leaf.CenterMin[axis], Is.LessThanOrEqualTo(asset.Positions[i][axis]));
+                        Assert.That(leaf.CenterMax[axis], Is.GreaterThanOrEqualTo(asset.Positions[i][axis]));
+                        Assert.That(leaf.FootprintMin[axis], Is.LessThanOrEqualTo(footprintMin[axis]));
+                        Assert.That(leaf.FootprintMax[axis], Is.GreaterThanOrEqualTo(footprintMax[axis]));
+                    }
+                }
+            }
+            finally
+            {
+                Object.DestroyImmediate(asset);
             }
         }
 

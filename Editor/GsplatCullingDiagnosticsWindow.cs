@@ -20,6 +20,13 @@ namespace Gsplat
         uint m_requestCandidateCount;
         uint m_candidateCount;
         uint m_visibleCount;
+        uint m_visibleCoarseCount;
+        uint m_fullLeafCount;
+        uint m_intersectLeafCount;
+        uint m_exactTestCount;
+        bool m_requestHierarchical;
+        bool m_visibleReadbackComplete;
+        bool m_hierarchyReadbackComplete;
         bool m_hasSample;
         string m_sampleLabel;
         string m_requestLabel;
@@ -94,6 +101,12 @@ namespace Gsplat
                 ? "N/A"
                 : ((double)m_visibleCount / m_candidateCount).ToString("P1");
             EditorGUILayout.LabelField("Visible Percentage", percentage);
+            if (!m_requestHierarchical)
+                return;
+            EditorGUILayout.LabelField("Visible Coarse Nodes", m_visibleCoarseCount.ToString("N0"));
+            EditorGUILayout.LabelField("Fully Inside Leaves", m_fullLeafCount.ToString("N0"));
+            EditorGUILayout.LabelField("Intersecting Leaves", m_intersectLeafCount.ToString("N0"));
+            EditorGUILayout.LabelField("Exact-Tested Splats", m_exactTestCount.ToString("N0"));
         }
 
         string GetUnavailableReason()
@@ -118,14 +131,24 @@ namespace Gsplat
             var buffer = m_renderer.VisibleCountBuffer;
             m_requestRendererId = GsplatUtils.GetObjectId(m_renderer);
             m_requestCandidateCount = m_renderer.RemainingCount;
+            m_requestHierarchical = m_renderer.HierarchicalCullingActive &&
+                                    m_renderer.HierarchyCountsBuffer != null;
             m_requestLabel = m_sampleLabel;
             m_requestPending = true;
             m_hasSample = false;
+            m_visibleReadbackComplete = false;
+            m_hierarchyReadbackComplete = !m_requestHierarchical;
+            m_visibleCoarseCount = 0;
+            m_fullLeafCount = 0;
+            m_intersectLeafCount = 0;
+            m_exactTestCount = 0;
             m_status = "Waiting for GPU readback.";
 
             try
             {
                 AsyncGPUReadback.Request(buffer, OnReadbackComplete);
+                if (m_requestHierarchical)
+                    AsyncGPUReadback.Request(m_renderer.HierarchyCountsBuffer, OnHierarchyReadbackComplete);
             }
             catch (Exception exception)
             {
@@ -136,12 +159,12 @@ namespace Gsplat
 
         void OnReadbackComplete(AsyncGPUReadbackRequest request)
         {
-            m_requestPending = false;
             if (!m_acceptResult)
                 return;
 
             if (!m_renderer || GsplatUtils.GetObjectId(m_renderer) != m_requestRendererId)
             {
+                m_requestPending = false;
                 m_status = "Discarded sample because selected renderer changed.";
                 Repaint();
                 return;
@@ -149,6 +172,7 @@ namespace Gsplat
 
             if (request.hasError)
             {
+                m_requestPending = false;
                 m_status = "GPU readback failed.";
                 Repaint();
                 return;
@@ -157,6 +181,7 @@ namespace Gsplat
             var data = request.GetData<uint>();
             if (data.Length == 0)
             {
+                m_requestPending = false;
                 m_status = "GPU readback returned no data.";
                 Repaint();
                 return;
@@ -164,6 +189,53 @@ namespace Gsplat
 
             m_candidateCount = m_requestCandidateCount;
             m_visibleCount = data[0];
+            m_visibleReadbackComplete = true;
+            TryCompleteSample();
+        }
+
+        void OnHierarchyReadbackComplete(AsyncGPUReadbackRequest request)
+        {
+            if (!m_acceptResult || !m_renderer ||
+                GsplatUtils.GetObjectId(m_renderer) != m_requestRendererId)
+            {
+                m_requestPending = false;
+                return;
+            }
+
+            if (request.hasError)
+            {
+                m_requestPending = false;
+                m_status = "Hierarchy GPU readback failed.";
+                Repaint();
+                return;
+            }
+
+            var data = request.GetData<uint>();
+            if (data.Length < 4)
+            {
+                m_requestPending = false;
+                m_status = "Hierarchy GPU readback returned incomplete data.";
+                Repaint();
+                return;
+            }
+
+            m_visibleCoarseCount = data[0];
+            m_fullLeafCount = data[1];
+            m_intersectLeafCount = data[2];
+            m_exactTestCount = data[3];
+            m_hierarchyReadbackComplete = true;
+            TryCompleteSample();
+        }
+
+        void TryCompleteSample()
+        {
+            if (m_visibleReadbackComplete && m_hierarchyReadbackComplete)
+                CompleteSample();
+        }
+
+        void CompleteSample()
+        {
+            m_requestPending = false;
             m_hasSample = true;
             SaveSample();
             Repaint();
@@ -180,7 +252,7 @@ namespace Gsplat
                 using var writer = new StreamWriter(m_logPath, true);
                 if (writeHeader)
                     writer.WriteLine(
-                        "Timestamp,Label,UnityVersion,GraphicsAPI,RenderPipeline,Scene,Renderer,Asset,AssetType,SHDegree,ViewportWidth,ViewportHeight,Candidates,Visible,VisiblePercent");
+                        "Timestamp,Label,UnityVersion,GraphicsAPI,RenderPipeline,Scene,Renderer,Asset,AssetType,SHDegree,ViewportWidth,ViewportHeight,CullingPath,ChunkSize,Aggressiveness,CoarseNodes,VisibleCoarseNodes,LeafNodes,FullyInsideLeaves,IntersectingLeaves,ExactTestedSplats,Candidates,Visible,VisiblePercent");
 
                 double visiblePercent = m_candidateCount == 0
                     ? 0
@@ -201,6 +273,16 @@ namespace Gsplat
                     m_renderer.SHDegree.ToString(CultureInfo.InvariantCulture),
                     Screen.width.ToString(CultureInfo.InvariantCulture),
                     Screen.height.ToString(CultureInfo.InvariantCulture),
+                    Csv(m_requestHierarchical ? "Hierarchy" : "Flat"),
+                    (asset && asset.HasSpatialHierarchy ? asset.SpatialChunkSize : 0)
+                    .ToString(CultureInfo.InvariantCulture),
+                    m_renderer.ChunkCullingAggressiveness.ToString("F3", CultureInfo.InvariantCulture),
+                    (asset?.SpatialCoarseNodes?.Length ?? 0).ToString(CultureInfo.InvariantCulture),
+                    m_visibleCoarseCount.ToString(CultureInfo.InvariantCulture),
+                    (asset?.SpatialLeafNodes?.Length ?? 0).ToString(CultureInfo.InvariantCulture),
+                    m_fullLeafCount.ToString(CultureInfo.InvariantCulture),
+                    m_intersectLeafCount.ToString(CultureInfo.InvariantCulture),
+                    m_exactTestCount.ToString(CultureInfo.InvariantCulture),
                     m_candidateCount.ToString(CultureInfo.InvariantCulture),
                     m_visibleCount.ToString(CultureInfo.InvariantCulture),
                     visiblePercent.ToString("F3", CultureInfo.InvariantCulture)));
@@ -232,6 +314,10 @@ namespace Gsplat
         void ClearSample()
         {
             m_hasSample = false;
+            m_visibleCoarseCount = 0;
+            m_fullLeafCount = 0;
+            m_intersectLeafCount = 0;
+            m_exactTestCount = 0;
             m_status = "No sample captured.";
         }
     }

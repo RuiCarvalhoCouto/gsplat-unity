@@ -41,6 +41,20 @@ Run on at least one pre-6.4 editor and one 6.4+ editor, using both D3D12 and Vul
 - [ ] Candidate and visible counts around `0`, `1`, `255`, `256`, `257`, `511`, `512`, and `513` produce valid dispatches, sorting, and drawing.
 - [ ] Cutouts, `Sort Always`, `Sort Every N Frames`, and mixed culling states preserve their existing candidate ordering and refresh behavior.
 
+## Spatial hierarchy
+
+- [ ] PLY and SPZ imports default to 256 splats per leaf; 128, 256, and 512 settings produce valid hierarchy metadata after reimport.
+- [ ] Spark and Uncompressed imports preserve each splat's position, scale, rotation, color, opacity, and every SH coefficient after Morton reordering.
+- [ ] Legacy assets without hierarchy metadata render through flat culling without errors or missing buffers.
+- [ ] Diagnostics reports `Hierarchy`, nonzero coarse/leaf totals, and work counts matching selected asset metadata.
+- [ ] Conservative aggressiveness `0` has no missing regions or view-edge popping compared with culling disabled.
+- [ ] Aggressiveness `0.5` and `1` remain stable while moving and clearly expose any accepted footprint-edge loss.
+- [ ] Fully-inside leaves emit splats without exact tests; intersecting leaves report exact-tested splats; outside leaves emit none.
+- [ ] Partial final leaves at 129, 257, and 513 uploaded splats never read or draw beyond uploaded data.
+- [ ] Cutout create, move, invert, target change, disable, and refresh-rate changes update the active mask without stale splats.
+- [ ] Async upload renders only uploaded spatial ranges and reaches the same final output as synchronous upload.
+- [ ] Two Spark renderers using global sort merge hierarchy-visible counts and orders correctly.
+
 ## Render modes and pipelines
 
 - [ ] URP renders correctly in a pre-6.4 editor and a 6.4+ editor, including the Unity 6 Render Graph path.
@@ -73,6 +87,7 @@ For each Unity-version and graphics-API combination below, capture three paired 
 - [ ] Capture the same paired poses on Unity 6000.5 D3D12.
 - [ ] Capture the same paired poses on Unity 6000.5 Vulkan.
 - [ ] Culling adds no per-frame managed allocation or GPU-to-CPU readback; all-visible overhead and additional VRAM are quantified.
+- [ ] Hierarchy diagnostics show reduced exact-tested splats in selective views and a functioning fully-inside fast path in high-visibility views.
 - [ ] Partially-visible and off-screen cases show a repeatable median reduction in sorting, drawing, or total GPU work, with no unexplained total-frame regression.
 
 ## Release gate

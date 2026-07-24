@@ -147,9 +147,14 @@ namespace Gsplat
         public uint PrunedSplatCount;
         public byte SHBands; // 0, 1, 2, 3, or 4
         public Bounds Bounds;
+        [HideInInspector] public int SpatialChunkSize = (int)GsplatSpatialChunkSize.Splats256;
+        [HideInInspector] public GsplatSpatialNode[] SpatialLeafNodes;
+        [HideInInspector] public GsplatSpatialNode[] SpatialCoarseNodes;
         public abstract CompressionMode Compression { get; }
+        public bool HasSpatialHierarchy => GsplatSpatialHierarchy.IsValid(this);
 
         protected int m_kernelInitOrder;
+        protected int m_kernelInitCutoutMask;
         static readonly protected int k_boundsBuffer = Shader.PropertyToID("_BoundsBuffer");
         static readonly protected int k_cutoutsBuffer = Shader.PropertyToID("_CutoutsBuffer");
         static readonly protected int k_cutoutsCount = Shader.PropertyToID("_CutoutsCount");
@@ -204,6 +209,7 @@ namespace Gsplat
 
             cutoutsBuffer.SetData(cutoutsData);
             cs.SetBuffer(m_kernelInitOrder, k_cutoutsBuffer, cutoutsBuffer);
+            cs.SetBuffer(m_kernelInitCutoutMask, k_cutoutsBuffer, cutoutsBuffer);
             cs.SetInt(k_cutoutsCount, numberOfCutouts);
             return cutoutsBuffer;
         }
@@ -218,6 +224,7 @@ namespace Gsplat
             BoundsBuffer.SetData(array);
 
             cs.SetBuffer(m_kernelInitOrder, k_boundsBuffer, BoundsBuffer);
+            cs.SetBuffer(m_kernelInitCutoutMask, k_boundsBuffer, BoundsBuffer);
         }
 
         protected abstract Task _UploadDataAsync(GsplatResource resource);
@@ -231,5 +238,19 @@ namespace Gsplat
 
         public abstract void InitOrder(ISorterResource sorterResource, GsplatResource resource,
             bool updateBounds);
+
+        public virtual void InitCutoutMask(GraphicsBuffer activeMaskBuffer, GraphicsBuffer activeCountBuffer,
+            GsplatResource resource, bool updateBounds) =>
+            throw new NotSupportedException($"{GetType().Name} does not support hierarchical cutout masks.");
+
+        internal virtual void GetSpatialData(int index, out Vector3 position, out Vector3 scale,
+            out Vector4 rotation) =>
+            throw new NotSupportedException($"{GetType().Name} does not support spatial hierarchy building.");
+
+        internal virtual void ApplySpatialOrder(uint[] sourceAtDestination) =>
+            throw new NotSupportedException($"{GetType().Name} does not support spatial hierarchy building.");
+
+        internal void BuildSpatialHierarchy(ProgressCallback progressCallback = null) =>
+            GsplatSpatialHierarchy.Build(this, progressCallback);
     }
 }

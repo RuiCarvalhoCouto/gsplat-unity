@@ -10,10 +10,11 @@ using UnityEngine;
 
 namespace Gsplat.Editor
 {
-    [ScriptedImporter(1, new[] { "ply", "spz" })]
+    [ScriptedImporter(2, new[] { "ply", "spz" })]
     public class GsplatImporter : ScriptedImporter
     {
         public CompressionMode Compression = CompressionMode.Spark;
+        public GsplatSpatialChunkSize SpatialChunkSize = GsplatSpatialChunkSize.Splats256;
 
         [Tooltip("Removes splats whose opacity (after sigmoid) is below this value at import time. 0 disables pruning.\n" +
                  "Start around 0.01–0.05 and increase while checking the visual result. Reduces overdraw, memory usage, and load time.\n" +
@@ -42,6 +43,7 @@ namespace Gsplat.Editor
                     : ScriptableObject.CreateInstance<GsplatAssetSpark>(),
                 _ => throw new ArgumentOutOfRangeException()
             };
+            gsplatAsset.SpatialChunkSize = (int)SpatialChunkSize;
 
 #if GSPLAT_VERBOSE_IMPORT_LOGGING
             Stopwatch swTotal = Stopwatch.StartNew();
@@ -64,7 +66,8 @@ namespace Gsplat.Editor
                 }
                 else if (gsplatAsset is GsplatAssetSpz spzAsset)
                 {
-                    string cachePath = GetCachePath(ctx.assetPath, Compression, SourceCoordinates, OpacityPruneThreshold);
+                    string cachePath = GetCachePath(ctx.assetPath, Compression, SourceCoordinates,
+                        OpacityPruneThreshold, SpatialChunkSize);
                     if (!spzAsset.TryLoadFromCache(cachePath))
                     {
                         spzTimings = spzAsset.LoadFromSpz(ctx.assetPath, SourceCoordinates, progress);
@@ -119,13 +122,14 @@ namespace Gsplat.Editor
         // Cache key combines filename, file size, last-write time, compression mode, source
         // coordinate frame, and prune threshold so any change in source file or import settings busts the cache.
         static string GetCachePath(string assetPath, CompressionMode compression, SourceCoordinates sourceCoordinates,
-            float opacityPruneThreshold)
+            float opacityPruneThreshold, GsplatSpatialChunkSize spatialChunkSize)
         {
             var fi = new FileInfo(assetPath);
             string stem = Path.GetFileNameWithoutExtension(assetPath);
             string key =
                 $"{stem}_{fi.Length}_{fi.LastWriteTimeUtc.Ticks}_{compression}_{sourceCoordinates}_" +
-                opacityPruneThreshold.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+                $"{opacityPruneThreshold.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}_" +
+                spatialChunkSize;
             key = string.Join("_", key.Split(Path.GetInvalidFileNameChars()));
             return Path.Combine("Library", "GsplatCache", key + ".bin");
         }

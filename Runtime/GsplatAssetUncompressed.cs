@@ -29,6 +29,8 @@ namespace Gsplat
         static readonly int k_matrixMv = Shader.PropertyToID("_MatrixMV");
         static readonly int k_depthBuffer = Shader.PropertyToID("_DepthBuffer");
         static readonly int k_orderBuffer = Shader.PropertyToID("_OrderBuffer");
+        static readonly int k_activeMaskBuffer = Shader.PropertyToID("_ActiveMaskBuffer");
+        static readonly int k_activeCountBuffer = Shader.PropertyToID("_ActiveCountBuffer");
 
         public override void Allocate()
         {
@@ -42,7 +44,7 @@ namespace Gsplat
 
         public override GsplatResource CreateResource()
         {
-            return new GsplatResourceUncompressed(SplatCount, SHBands);
+            return new GsplatResourceUncompressed(this);
         }
 
         protected override void _UploadData(GsplatResource resource)
@@ -96,6 +98,7 @@ namespace Gsplat
         {
             var cs = GsplatMaterial.InitOrderShader;
             m_kernelInitOrder = cs.FindKernel("InitOrder");
+            m_kernelInitCutoutMask = cs.FindKernel("InitCutoutMask");
 
             var res = (GsplatResourceUncompressed)resource;
             propertyBlock.SetBuffer(k_positionBuffer, res.PositionBuffer);
@@ -133,6 +136,23 @@ namespace Gsplat
             else
                 cs.DisableKeyword("UPDATE_BOUNDS");
             cs.Dispatch(m_kernelInitOrder, (int)GsplatUtils.DivRoundUp(res.UploadedCount, 1024), 1, 1);
+        }
+
+        public override void InitCutoutMask(GraphicsBuffer activeMaskBuffer, GraphicsBuffer activeCountBuffer,
+            GsplatResource resource, bool updateBounds)
+        {
+            var cs = GsplatMaterial.InitOrderShader;
+            var res = (GsplatResourceUncompressed)resource;
+            activeCountBuffer.SetData(new uint[1]);
+            cs.SetInt(k_splatCount, (int)res.UploadedCount);
+            cs.SetBuffer(m_kernelInitCutoutMask, k_positionBuffer, res.PositionBuffer);
+            cs.SetBuffer(m_kernelInitCutoutMask, k_activeMaskBuffer, activeMaskBuffer);
+            cs.SetBuffer(m_kernelInitCutoutMask, k_activeCountBuffer, activeCountBuffer);
+            if (updateBounds)
+                cs.EnableKeyword("UPDATE_BOUNDS");
+            else
+                cs.DisableKeyword("UPDATE_BOUNDS");
+            cs.Dispatch(m_kernelInitCutoutMask, (int)GsplatUtils.DivRoundUp(res.UploadedCount, 1024), 1, 1);
         }
 
         public override void LoadFromPly(string plyPath, ProgressCallback progressCallback = null,
@@ -247,6 +267,27 @@ namespace Gsplat
                 if (SHBands > 0)
                     Array.Resize(ref SHs, (int)w * shCoeffs);
             }
+
+            BuildSpatialHierarchy(progressCallback);
+        }
+
+        internal override void GetSpatialData(int index, out Vector3 position, out Vector3 scale,
+            out Vector4 rotation)
+        {
+            position = Positions[index];
+            scale = Scales[index];
+            rotation = Rotations[index];
+        }
+
+        internal override void ApplySpatialOrder(uint[] sourceAtDestination)
+        {
+            GsplatSpatialHierarchy.ReorderBlocks(Positions, 1, sourceAtDestination);
+            GsplatSpatialHierarchy.ReorderBlocks(Colors, 1, sourceAtDestination);
+            GsplatSpatialHierarchy.ReorderBlocks(Scales, 1, sourceAtDestination);
+            GsplatSpatialHierarchy.ReorderBlocks(Rotations, 1, sourceAtDestination);
+            if (SHBands > 0)
+                GsplatSpatialHierarchy.ReorderBlocks(SHs,
+                    GsplatUtils.SHBandsToCoefficientCount(SHBands), sourceAtDestination);
         }
     }
 }

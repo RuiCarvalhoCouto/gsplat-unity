@@ -16,6 +16,7 @@ namespace Gsplat.Editor
 
             EditorGUILayout.PropertyField(serializedObject.FindProperty("Compression"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("SourceCoordinates"));
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("SpatialChunkSize"));
 
             var importer = target as GsplatImporter;
             var assetPath = importer ? importer.assetPath : string.Empty;

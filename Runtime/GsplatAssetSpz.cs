@@ -139,6 +139,7 @@ namespace Gsplat
                 Bounds = new Bounds((gMin + gMax) * 0.5f, gMax - gMin);
 
             progressCallback?.Invoke("Packing splats", 1f);
+            BuildSpatialHierarchy(progressCallback);
 
             return new SpzPhaseTimings
             {

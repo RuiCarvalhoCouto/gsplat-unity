@@ -4,12 +4,15 @@
 #define GROUP_SIZE 1024
 
 #pragma kernel InitOrder
+#pragma kernel InitCutoutMask
 
 #pragma multi_compile __ UPDATE_BOUNDS
 
 uint _SplatCount;
 
 AppendStructuredBuffer<uint> _OrderBuffer;
+RWStructuredBuffer<uint> _ActiveMaskBuffer;
+RWByteAddressBuffer _ActiveCountBuffer;
 StructuredBuffer<float3> _PositionBuffer;
 
 struct GaussianCutoutShaderData
@@ -49,4 +52,29 @@ void InitOrder(uint3 id : SV_DispatchThreadID)
         InterlockedMax(_BoundsBuffer[5], FloatToSortableUint(splatPos.z));
 #endif
     }
+}
+
+[numthreads(GROUP_SIZE,1,1)]
+void InitCutoutMask(uint3 id : SV_DispatchThreadID)
+{
+    uint idx = id.x;
+    if (idx >= _SplatCount)
+        return;
+
+    float3 splatPos = _PositionBuffer[idx];
+    bool active = !IsSplatCut(splatPos);
+    _ActiveMaskBuffer[idx] = active ? 1 : 0;
+    if (!active)
+        return;
+
+    uint unused;
+    _ActiveCountBuffer.InterlockedAdd(0, 1, unused);
+#ifdef UPDATE_BOUNDS
+    InterlockedMin(_BoundsBuffer[0], FloatToSortableUint(splatPos.x));
+    InterlockedMin(_BoundsBuffer[1], FloatToSortableUint(splatPos.y));
+    InterlockedMin(_BoundsBuffer[2], FloatToSortableUint(splatPos.z));
+    InterlockedMax(_BoundsBuffer[3], FloatToSortableUint(splatPos.x));
+    InterlockedMax(_BoundsBuffer[4], FloatToSortableUint(splatPos.y));
+    InterlockedMax(_BoundsBuffer[5], FloatToSortableUint(splatPos.z));
+#endif
 }
