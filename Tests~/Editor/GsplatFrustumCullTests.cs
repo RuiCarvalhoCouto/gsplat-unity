@@ -134,6 +134,51 @@ namespace Gsplat.Tests
         }
 
         [Test]
+        public void SpatialHierarchyBuildsMultilevelLodRepresentatives()
+        {
+            var asset = ScriptableObject.CreateInstance<GsplatAssetUncompressed>();
+            try
+            {
+                const int count = 257;
+                asset.SplatCount = count;
+                asset.SHBands = 1;
+                asset.SpatialChunkSize = 128;
+                asset.Allocate();
+                for (int i = 0; i < count; ++i)
+                {
+                    asset.Positions[i] = new Vector3(i % 17, (i / 17) % 17, i / 289.0f);
+                    asset.Colors[i] = new Vector4(0.1f, -0.2f, 0.3f, 0.5f);
+                    asset.Scales[i] = new Vector3(0.02f, 0.03f, 0.04f);
+                    asset.Rotations[i] = new Vector4(0, 0, 0, 1);
+                    for (int coefficient = 0; coefficient < 3; ++coefficient)
+                        asset.SHs[i * 3 + coefficient] = Vector3.one * (coefficient + 1);
+                }
+
+                asset.BuildSpatialHierarchy();
+
+                Assert.That(asset.SpatialLodNodes.Length, Is.EqualTo(4));
+                Assert.That(asset.SpatialLodRoot, Is.EqualTo(3));
+                Assert.That(asset.SpatialLodNodes[asset.SpatialLodRoot].ChildCount, Is.EqualTo(3));
+                Assert.That(asset.SpatialLodNodes[asset.SpatialLodRoot].SplatCount, Is.EqualTo(count));
+                Assert.That(asset.SpatialLodSplats.Length,
+                    Is.EqualTo(GsplatSpatialHierarchy.MaxLodRepresentatives));
+                Assert.That(asset.SpatialLodSH.Length, Is.EqualTo(asset.SpatialLodSplats.Length * 3));
+                foreach (var representative in asset.SpatialLodSplats)
+                {
+                    Assert.That(representative.PositionOpacity.w, Is.InRange(1.0f / 255.0f, 0.995f));
+                    Assert.That(representative.ScaleContribution.x, Is.GreaterThan(0));
+                    Assert.That(representative.ScaleContribution.y, Is.GreaterThan(0));
+                    Assert.That(representative.ScaleContribution.z, Is.GreaterThan(0));
+                    Assert.That(representative.Rotation.magnitude, Is.EqualTo(1).Within(1e-4f));
+                }
+            }
+            finally
+            {
+                Object.DestroyImmediate(asset);
+            }
+        }
+
+        [Test]
         public void StaticSortDoesNotRequireDynamicCountBuffer()
         {
             var shader = AssetDatabase.LoadAssetAtPath<ComputeShader>(

@@ -487,6 +487,50 @@ namespace Gsplat
                 GsplatSpatialHierarchy.ReorderBlocks(PackedSH4, 4, sourceAtDestination);
         }
 
+        internal override void GetLodData(int index, out Vector3 position, out Vector3 scale,
+            out Vector4 rotation, out Vector4 color)
+        {
+            GetSpatialData(index, out position, out scale, out rotation);
+            uint packedColor = PackedSplats[index].x;
+            color = new Vector4(
+                (packedColor & 0xFFu) / 255.0f,
+                ((packedColor >> 8) & 0xFFu) / 255.0f,
+                ((packedColor >> 16) & 0xFFu) / 255.0f,
+                ((packedColor >> 24) & 0xFFu) / 255.0f);
+        }
+
+        internal override Vector3 GetLodSH(int index, int coefficient)
+        {
+            if (coefficient < 3)
+                return ReadPackedSH(PackedSH1, index * 2, coefficient, 7, 63.0f);
+            if (coefficient < 8)
+                return ReadPackedSH(PackedSH2, index * 4, coefficient - 3, 8, 127.0f);
+            if (coefficient < 15)
+                return ReadPackedSH(PackedSH3, index * 4, coefficient - 8, 6, 31.0f);
+            return ReadPackedSH(PackedSH4, index * 4, coefficient - 15, 4, 7.0f);
+        }
+
+        static Vector3 ReadPackedSH(uint[] data, int wordOffset, int coefficient, int bits, float scale)
+        {
+            int value = coefficient * 3;
+            return new Vector3(
+                ReadSignedBits(data, wordOffset, value, bits) / scale,
+                ReadSignedBits(data, wordOffset, value + 1, bits) / scale,
+                ReadSignedBits(data, wordOffset, value + 2, bits) / scale);
+        }
+
+        static int ReadSignedBits(uint[] data, int wordOffset, int valueIndex, int bits)
+        {
+            int bit = valueIndex * bits;
+            int word = bit / 32;
+            int shift = bit & 31;
+            uint packed = data[wordOffset + word] >> shift;
+            if (shift + bits > 32)
+                packed |= data[wordOffset + word + 1] << (32 - shift);
+            int leftShift = 32 - bits;
+            return ((int)packed << leftShift) >> leftShift;
+        }
+
         /// <summary>
         /// Inspired from SparkJs encodeSh1Rgb implementation
         ///
@@ -603,8 +647,8 @@ namespace Gsplat
         // ─── Binary import cache ───────────────────────────────────────────────────
 
         const uint CacheMagic = 0x43435347u; // "GSCC" little-endian
-        // v3: added spatial hierarchy metadata.
-        const uint CacheFormatVersion = 3u;
+        // v4: added multilevel LOD hierarchy and representative data.
+        const uint CacheFormatVersion = 4u;
 
         /// <summary>
         /// Attempts to populate this asset's packed arrays from a previously saved cache
@@ -629,8 +673,13 @@ namespace Gsplat
                 SpatialChunkSize = br.ReadInt32();
                 int leafCount = br.ReadInt32();
                 int coarseCount = br.ReadInt32();
+                int lodNodeCount = br.ReadInt32();
+                int lodSplatCount = br.ReadInt32();
+                int lodShCount = br.ReadInt32();
+                SpatialLodRoot = br.ReadUInt32();
                 if (!GsplatSpatialHierarchy.IsValidChunkSize(SpatialChunkSize) ||
-                    leafCount < 0 || coarseCount < 0)
+                    leafCount < 0 || coarseCount < 0 || lodNodeCount < 0 ||
+                    lodSplatCount < 0 || lodShCount < 0)
                     return false;
 
                 var center = new Vector3(br.ReadSingle(), br.ReadSingle(), br.ReadSingle());
@@ -646,8 +695,14 @@ namespace Gsplat
                 if (SHBands >= 4) ReadExactBytes(fs, MemoryMarshal.AsBytes(PackedSH4.AsSpan()));
                 SpatialLeafNodes = new GsplatSpatialNode[leafCount];
                 SpatialCoarseNodes = new GsplatSpatialNode[coarseCount];
+                SpatialLodNodes = new GsplatLodNode[lodNodeCount];
+                SpatialLodSplats = new GsplatLodSplat[lodSplatCount];
+                SpatialLodSH = new Vector3[lodShCount];
                 ReadExactBytes(fs, MemoryMarshal.AsBytes(SpatialLeafNodes.AsSpan()));
                 ReadExactBytes(fs, MemoryMarshal.AsBytes(SpatialCoarseNodes.AsSpan()));
+                ReadExactBytes(fs, MemoryMarshal.AsBytes(SpatialLodNodes.AsSpan()));
+                ReadExactBytes(fs, MemoryMarshal.AsBytes(SpatialLodSplats.AsSpan()));
+                ReadExactBytes(fs, MemoryMarshal.AsBytes(SpatialLodSH.AsSpan()));
 
                 return HasSpatialHierarchy;
             }
@@ -676,6 +731,10 @@ namespace Gsplat
             bw.Write(SpatialChunkSize);
             bw.Write(SpatialLeafNodes?.Length ?? 0);
             bw.Write(SpatialCoarseNodes?.Length ?? 0);
+            bw.Write(SpatialLodNodes?.Length ?? 0);
+            bw.Write(SpatialLodSplats?.Length ?? 0);
+            bw.Write(SpatialLodSH?.Length ?? 0);
+            bw.Write(SpatialLodRoot);
 
             bw.Write(Bounds.center.x); bw.Write(Bounds.center.y); bw.Write(Bounds.center.z);
             bw.Write(Bounds.size.x);   bw.Write(Bounds.size.y);   bw.Write(Bounds.size.z);
@@ -689,6 +748,12 @@ namespace Gsplat
                 fs.Write(MemoryMarshal.AsBytes(SpatialLeafNodes.AsSpan()));
             if (SpatialCoarseNodes is { Length: > 0 })
                 fs.Write(MemoryMarshal.AsBytes(SpatialCoarseNodes.AsSpan()));
+            if (SpatialLodNodes is { Length: > 0 })
+                fs.Write(MemoryMarshal.AsBytes(SpatialLodNodes.AsSpan()));
+            if (SpatialLodSplats is { Length: > 0 })
+                fs.Write(MemoryMarshal.AsBytes(SpatialLodSplats.AsSpan()));
+            if (SpatialLodSH is { Length: > 0 })
+                fs.Write(MemoryMarshal.AsBytes(SpatialLodSH.AsSpan()));
         }
 
         static void ReadExactBytes(Stream stream, Span<byte> buffer)

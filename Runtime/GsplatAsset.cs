@@ -150,6 +150,10 @@ namespace Gsplat
         [HideInInspector] public int SpatialChunkSize = (int)GsplatSpatialChunkSize.Splats256;
         [HideInInspector] public GsplatSpatialNode[] SpatialLeafNodes;
         [HideInInspector] public GsplatSpatialNode[] SpatialCoarseNodes;
+        [HideInInspector] public GsplatLodNode[] SpatialLodNodes;
+        [HideInInspector] public GsplatLodSplat[] SpatialLodSplats;
+        [HideInInspector] public Vector3[] SpatialLodSH;
+        [HideInInspector] public uint SpatialLodRoot;
         public abstract CompressionMode Compression { get; }
         public bool HasSpatialHierarchy => GsplatSpatialHierarchy.IsValid(this);
 
@@ -249,6 +253,13 @@ namespace Gsplat
 
         internal virtual void ApplySpatialOrder(uint[] sourceAtDestination) =>
             throw new NotSupportedException($"{GetType().Name} does not support spatial hierarchy building.");
+
+        internal virtual void GetLodData(int index, out Vector3 position, out Vector3 scale,
+            out Vector4 rotation, out Vector4 color) =>
+            throw new NotSupportedException($"{GetType().Name} does not support LOD hierarchy building.");
+
+        internal virtual Vector3 GetLodSH(int index, int coefficient) =>
+            throw new NotSupportedException($"{GetType().Name} does not support LOD hierarchy building.");
 
         internal void BuildSpatialHierarchy(ProgressCallback progressCallback = null) =>
             GsplatSpatialHierarchy.Build(this, progressCallback);

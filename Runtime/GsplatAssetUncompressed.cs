@@ -289,5 +289,20 @@ namespace Gsplat
                 GsplatSpatialHierarchy.ReorderBlocks(SHs,
                     GsplatUtils.SHBandsToCoefficientCount(SHBands), sourceAtDestination);
         }
+
+        internal override void GetLodData(int index, out Vector3 position, out Vector3 scale,
+            out Vector4 rotation, out Vector4 color)
+        {
+            position = Positions[index];
+            scale = Scales[index];
+            rotation = Rotations[index];
+            color = Colors[index];
+            color.x = color.x * 0.28209479177387814f + 0.5f;
+            color.y = color.y * 0.28209479177387814f + 0.5f;
+            color.z = color.z * 0.28209479177387814f + 0.5f;
+        }
+
+        internal override Vector3 GetLodSH(int index, int coefficient) =>
+            SHs[index * GsplatUtils.SHBandsToCoefficientCount(SHBands) + coefficient];
     }
 }
