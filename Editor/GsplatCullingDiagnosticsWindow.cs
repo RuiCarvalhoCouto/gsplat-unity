@@ -2,9 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 using System;
+using System.Globalization;
+using System.IO;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.SceneManagement;
 
 namespace Gsplat
 {
@@ -18,6 +21,9 @@ namespace Gsplat
         uint m_candidateCount;
         uint m_visibleCount;
         bool m_hasSample;
+        string m_sampleLabel;
+        string m_requestLabel;
+        string m_logPath;
         string m_status = "No sample captured.";
 
         [MenuItem("Window/Gsplat/Culling Diagnostics")]
@@ -63,6 +69,8 @@ namespace Gsplat
                 ClearSample();
             }
 
+            m_sampleLabel = EditorGUILayout.TextField("Sample Label", m_sampleLabel);
+
             string unavailableReason = GetUnavailableReason();
             using (new EditorGUI.DisabledScope(unavailableReason != null))
             {
@@ -75,6 +83,8 @@ namespace Gsplat
 
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("Status", m_status);
+            if (!string.IsNullOrEmpty(m_logPath))
+                EditorGUILayout.LabelField($"Log File: {m_logPath}", EditorStyles.wordWrappedLabel);
             if (!m_hasSample)
                 return;
 
@@ -108,6 +118,7 @@ namespace Gsplat
             var buffer = m_renderer.VisibleCountBuffer;
             m_requestRendererId = GsplatUtils.GetObjectId(m_renderer);
             m_requestCandidateCount = m_renderer.RemainingCount;
+            m_requestLabel = m_sampleLabel;
             m_requestPending = true;
             m_hasSample = false;
             m_status = "Waiting for GPU readback.";
@@ -154,8 +165,68 @@ namespace Gsplat
             m_candidateCount = m_requestCandidateCount;
             m_visibleCount = data[0];
             m_hasSample = true;
-            m_status = "Sample captured.";
+            SaveSample();
             Repaint();
+        }
+
+        void SaveSample()
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(m_logPath))
+                    m_logPath = CreateLogPath();
+
+                bool writeHeader = !File.Exists(m_logPath);
+                using var writer = new StreamWriter(m_logPath, true);
+                if (writeHeader)
+                    writer.WriteLine(
+                        "Timestamp,Label,UnityVersion,GraphicsAPI,RenderPipeline,Scene,Renderer,Asset,AssetType,SHDegree,ViewportWidth,ViewportHeight,Candidates,Visible,VisiblePercent");
+
+                double visiblePercent = m_candidateCount == 0
+                    ? 0
+                    : (double)m_visibleCount / m_candidateCount * 100.0;
+                var asset = m_renderer.GsplatAsset;
+                writer.WriteLine(string.Join(",",
+                    Csv(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture)),
+                    Csv(m_requestLabel),
+                    Csv(Application.unityVersion),
+                    Csv(SystemInfo.graphicsDeviceType.ToString()),
+                    Csv(GraphicsSettings.currentRenderPipeline
+                        ? GraphicsSettings.currentRenderPipeline.GetType().Name
+                        : "Built-in"),
+                    Csv(SceneManager.GetActiveScene().path),
+                    Csv(m_renderer.name),
+                    Csv(asset ? asset.name : ""),
+                    Csv(asset ? asset.GetType().Name : ""),
+                    m_renderer.SHDegree.ToString(CultureInfo.InvariantCulture),
+                    Screen.width.ToString(CultureInfo.InvariantCulture),
+                    Screen.height.ToString(CultureInfo.InvariantCulture),
+                    m_candidateCount.ToString(CultureInfo.InvariantCulture),
+                    m_visibleCount.ToString(CultureInfo.InvariantCulture),
+                    visiblePercent.ToString("F3", CultureInfo.InvariantCulture)));
+                m_status = "Sample captured and logged.";
+            }
+            catch (Exception exception)
+            {
+                m_status = $"Sample captured, but log write failed: {exception.Message}";
+            }
+        }
+
+        static string CreateLogPath()
+        {
+            string projectRoot = Path.GetDirectoryName(Application.dataPath);
+            string directory = Path.Combine(projectRoot, "ProfilerCaptures");
+            Directory.CreateDirectory(directory);
+            string timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss", CultureInfo.InvariantCulture);
+            string path = Path.Combine(directory, $"{timestamp}_GsplatCulling.csv");
+            for (int suffix = 2; File.Exists(path); ++suffix)
+                path = Path.Combine(directory, $"{timestamp}_GsplatCulling_{suffix}.csv");
+            return path;
+        }
+
+        static string Csv(string value)
+        {
+            return $"\"{(value ?? "").Replace("\"", "\"\"")}\"";
         }
 
         void ClearSample()

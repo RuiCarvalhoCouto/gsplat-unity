@@ -64,7 +64,7 @@ Run on at least one pre-6.4 editor and one 6.4+ editor, using both D3D12 and Vul
 
 Use identical hardware, scene, fixed camera or headset poses, resolution, pipeline, graphics API, asset, SH degree, and quality settings. Test all-visible, partially-visible, and fully-off-screen poses. Warm up each configuration before capture.
 
-At each pose, use `Window > Gsplat > Culling Diagnostics` to capture one culling-enabled sample. Record candidate count, visible count, and visible percentage, then close the diagnostics window before timed profiling.
+At each pose, enter a descriptive sample label and use `Window > Gsplat > Culling Diagnostics` to capture one culling-enabled sample. Confirm the timestamped CSV was written under the project's `ProfilerCaptures` directory, then close the diagnostics window before timed profiling.
 
 For each Unity-version and graphics-API combination below, capture three paired 30-second runs per pose after warm-up. Alternate order between pairs: disabled/enabled, enabled/disabled, disabled/enabled. Keep camera or headset pose fixed. Capture CPU and GPU profiler data separately when required. Compare medians, not individual peaks or FPS snapshots. Record CPU main-thread time, GPU frame time, culling time, sorting time, draw time, VRAM, and GC allocations. Do not use Deep Profile.
 
