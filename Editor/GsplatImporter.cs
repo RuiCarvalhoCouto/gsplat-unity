@@ -162,7 +162,13 @@ namespace Gsplat.Editor
 
             if (reimported.Count == 0) return;
 
+#if UNITY_6000_5_OR_NEWER
+            var renderers = UnityEngine.Object.FindObjectsByType<GsplatRenderer>();
+#elif UNITY_2022_2_OR_NEWER
             var renderers = UnityEngine.Object.FindObjectsByType<GsplatRenderer>(FindObjectsSortMode.None);
+#else
+            var renderers = UnityEngine.Object.FindObjectsOfType<GsplatRenderer>();
+#endif
             foreach (var renderer in renderers)
             {
                 if (string.IsNullOrEmpty(renderer.AssetGuid)) continue;

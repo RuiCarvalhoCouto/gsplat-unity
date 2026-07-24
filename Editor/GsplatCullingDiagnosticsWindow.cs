@@ -13,7 +13,7 @@ namespace Gsplat
         GsplatRenderer m_renderer;
         bool m_requestPending;
         bool m_acceptResult;
-        int m_requestRendererId;
+        ulong m_requestRendererId;
         uint m_requestCandidateCount;
         uint m_candidateCount;
         uint m_visibleCount;
@@ -106,7 +106,7 @@ namespace Gsplat
         void Capture()
         {
             var buffer = m_renderer.VisibleCountBuffer;
-            m_requestRendererId = m_renderer.GetInstanceID();
+            m_requestRendererId = GsplatUtils.GetObjectId(m_renderer);
             m_requestCandidateCount = m_renderer.RemainingCount;
             m_requestPending = true;
             m_hasSample = false;
@@ -129,7 +129,7 @@ namespace Gsplat
             if (!m_acceptResult)
                 return;
 
-            if (!m_renderer || m_renderer.GetInstanceID() != m_requestRendererId)
+            if (!m_renderer || GsplatUtils.GetObjectId(m_renderer) != m_requestRendererId)
             {
                 m_status = "Discarded sample because selected renderer changed.";
                 Repaint();
