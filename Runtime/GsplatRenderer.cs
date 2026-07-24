@@ -95,6 +95,11 @@ namespace Gsplat
         internal void Cull(CommandBuffer cmd, in GsplatCameraInfo cameraInfo) =>
             m_renderer.Cull(cmd, cameraInfo, transform);
 
+        void Reset()
+        {
+            EnableFrustumCulling = true;
+        }
+
         void OnEnable()
         {
             GsplatSorter.Instance.RegisterGsplat(this);

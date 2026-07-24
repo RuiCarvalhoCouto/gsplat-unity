@@ -8,6 +8,45 @@ namespace Gsplat.Tests
     public class GsplatFrustumCullTests
     {
         [Test]
+        public void NewRendererEnablesFrustumCulling()
+        {
+            var gameObject = new GameObject();
+            try
+            {
+                var renderer = gameObject.AddComponent<GsplatRenderer>();
+                Assert.That(renderer.EnableFrustumCulling, Is.True);
+            }
+            finally
+            {
+                Object.DestroyImmediate(gameObject);
+            }
+        }
+
+        [Test]
+        public void SerializedDisabledCullingIsPreserved()
+        {
+            var sourceObject = new GameObject();
+            var destinationObject = new GameObject();
+            try
+            {
+                var source = sourceObject.AddComponent<GsplatRenderer>();
+                source.EnableFrustumCulling = false;
+                var serializedRenderer = EditorJsonUtility.ToJson(source);
+
+                var destination = destinationObject.AddComponent<GsplatRenderer>();
+                Assert.That(destination.EnableFrustumCulling, Is.True);
+
+                EditorJsonUtility.FromJsonOverwrite(serializedRenderer, destination);
+                Assert.That(destination.EnableFrustumCulling, Is.False);
+            }
+            finally
+            {
+                Object.DestroyImmediate(sourceObject);
+                Object.DestroyImmediate(destinationObject);
+            }
+        }
+
+        [Test]
         public void StaticSortDoesNotRequireDynamicCountBuffer()
         {
             var shader = AssetDatabase.LoadAssetAtPath<ComputeShader>(
