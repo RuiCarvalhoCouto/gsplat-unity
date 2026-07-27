@@ -205,7 +205,7 @@ namespace Gsplat
         uint m_sortsBeforeRecomputeCutouts = 0;
         public bool ComputeSortRequired = true;
         public bool ComputeCutoutsRequired = true;
-        Dictionary<ulong, (Vector3, Vector3)> m_prevCamTransforms;
+        Dictionary<ulong, (Vector3, Quaternion)> m_prevCamTransforms;
 
         GsplatCutout.ShaderData[] m_cutoutsData;
         uint m_prevSplatCount;
@@ -213,7 +213,7 @@ namespace Gsplat
         public GsplatRendererImpl(uint splatCount)
         {
             SplatCount = splatCount;
-            m_prevCamTransforms = new Dictionary<ulong, (Vector3, Vector3)>();
+            m_prevCamTransforms = new Dictionary<ulong, (Vector3, Quaternion)>();
             CreateResources(splatCount);
             CreatePropertyBlock();
         }
@@ -870,38 +870,43 @@ namespace Gsplat
             m_hasRenderMatrix = true;
         }
 
-        public void RefreshOnCameraMove()
+        public void RefreshOnCameraMove(bool precise)
         {
+            float translationThreshold = precise
+                ? Mathf.Min(GsplatSettings.Instance.CameraTranslationRefreshTreshold, 0.02f)
+                : GsplatSettings.Instance.CameraTranslationRefreshTreshold;
+            float rotationThreshold = precise
+                ? Mathf.Min(GsplatSettings.Instance.CameraRotationRefreshTreshold, 0.5f)
+                : GsplatSettings.Instance.CameraRotationRefreshTreshold;
             foreach (var cam in Camera.allCameras)
             {
                 var id = GsplatUtils.GetObjectId(cam);
-                if (m_prevCamTransforms.TryGetValue(id, out (Vector3, Vector3) prevCamTransform))
+                if (m_prevCamTransforms.TryGetValue(id, out (Vector3, Quaternion) prevCamTransform))
                 {
-                    (Vector3 prevCamPos, Vector3 prevCamRot) = prevCamTransform;
+                    (Vector3 prevCamPos, Quaternion prevCamRot) = prevCamTransform;
 
                     if ((cam.transform.position - prevCamPos).magnitude >
-                        GsplatSettings.Instance.CameraTranslationRefreshTreshold
-                        || (cam.transform.eulerAngles - prevCamRot).magnitude >
-                        GsplatSettings.Instance.CameraRotationRefreshTreshold)
+                        translationThreshold ||
+                        Quaternion.Angle(cam.transform.rotation, prevCamRot) > rotationThreshold)
                     {
-                        m_prevCamTransforms[id] = (cam.transform.position, cam.transform.eulerAngles);
+                        m_prevCamTransforms[id] = (cam.transform.position, cam.transform.rotation);
                         ForceRefresh();
                     }
                 }
                 else
                 {
-                    m_prevCamTransforms.Add(id, (cam.transform.position, cam.transform.eulerAngles));
+                    m_prevCamTransforms.Add(id, (cam.transform.position, cam.transform.rotation));
                     ForceRefresh();
                 }
             }
         }
 
         public void EvaluateRefreshRequired(GsplatRenderer.GsplatSortMode mode, uint sortRefreshRate,
-            uint cutoutsRefreshRate)
+            uint cutoutsRefreshRate, bool approximateDepthSort)
         {
             if (mode == GsplatRenderer.GsplatSortMode.Always)
             {
-                sortRefreshRate = 0;
+                sortRefreshRate = approximateDepthSort ? 1u : 0u;
                 cutoutsRefreshRate = 0;
             }
 
@@ -910,7 +915,7 @@ namespace Gsplat
                 cutoutsRefreshRate = 0;
             }
 
-            RefreshOnCameraMove();
+            RefreshOnCameraMove(approximateDepthSort);
 
             ComputeSortRequired = false;
             ComputeCutoutsRequired = false;

@@ -220,6 +220,54 @@ namespace Gsplat.Tests
         }
 
         [Test]
+        public void ApproximateSortUsesStableHigh16BitDepth()
+        {
+            var shader = AssetDatabase.LoadAssetAtPath<ComputeShader>(
+                "Packages/rui.couto.gsplat/Runtime/Shaders/Gsplat.compute");
+            Assert.That(shader, Is.Not.Null);
+
+            var sortPass = new GsplatSortPass(shader);
+            Assert.That(sortPass.Valid, Is.True);
+
+            var inputKeys = new[] { -2.001f, -8.0f, -2.002f, -0.5f };
+            Assert.That(GsplatUtils.FloatToSortableUint(inputKeys[0]) >> 16,
+                Is.EqualTo(GsplatUtils.FloatToSortableUint(inputKeys[2]) >> 16));
+            using var keys = new GraphicsBuffer(GraphicsBuffer.Target.Structured, inputKeys.Length, sizeof(float));
+            using var values = new GraphicsBuffer(GraphicsBuffer.Target.Structured, inputKeys.Length, sizeof(uint));
+            using var commandBuffer = new CommandBuffer();
+            var resources = GsplatSortPass.SupportResources.Load((uint)inputKeys.Length);
+
+            try
+            {
+                keys.SetData(inputKeys);
+                values.SetData(new uint[] { 0, 1, 2, 3 });
+                sortPass.Dispatch(commandBuffer, new GsplatSortPass.Args
+                {
+                    Count = (uint)inputKeys.Length,
+                    Approximate16Bit = true,
+                    InputKeys = keys,
+                    InputValues = values,
+                    Resources = resources
+                });
+                Graphics.ExecuteCommandBuffer(commandBuffer);
+
+                var sortedKeys = new float[inputKeys.Length];
+                var sortedValues = new uint[inputKeys.Length];
+                keys.GetData(sortedKeys);
+                values.GetData(sortedValues);
+                for (int i = 1; i < sortedKeys.Length; ++i)
+                    Assert.That(GsplatUtils.FloatToSortableUint(sortedKeys[i - 1]) >> 16,
+                        Is.LessThanOrEqualTo(GsplatUtils.FloatToSortableUint(sortedKeys[i]) >> 16));
+                Assert.That(System.Array.IndexOf(sortedValues, 0),
+                    Is.LessThan(System.Array.IndexOf(sortedValues, 2)));
+            }
+            finally
+            {
+                resources.Dispose();
+            }
+        }
+
+        [Test]
         public void CullUncompressedRetainsOverlappingFootprintsOnly()
         {
             var shader = AssetDatabase.LoadAssetAtPath<ComputeShader>(

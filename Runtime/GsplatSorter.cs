@@ -340,6 +340,7 @@ namespace Gsplat
                     DispatchArgs = gs is GsplatRenderer { FrustumCullingActive: true } indirectRenderer
                         ? indirectRenderer.SortDispatchArgs
                         : null,
+                    Approximate16Bit = gs is GsplatRenderer { ApproximateDepthSort: true },
                     MatrixMv = cameraInfo.SortViewMatrix * gs.transform.localToWorldMatrix,
                     InputKeys = res.InputKeys,
                     InputValues = res.OrderBuffer,

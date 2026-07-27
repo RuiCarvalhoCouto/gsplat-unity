@@ -41,6 +41,7 @@ namespace Gsplat
             public uint Count;
             public GraphicsBuffer CountBuffer;
             public GraphicsBuffer DispatchArgs;
+            public bool Approximate16Bit;
             public Matrix4x4 MatrixMv;
             public GraphicsBuffer PackedSplatsBuffer;
             public GraphicsBuffer InputKeys;
@@ -202,8 +203,10 @@ namespace Gsplat
                 args.Resources.GlobalHistBuffer);
             cmd.DispatchCompute(m_CS, m_kernelInitDeviceRadixSort, 1, 1, 1);
 
-            // Execute the sort algorithm in 8-bit increments
-            for (uint radixShift = 0; radixShift < 32; radixShift += k_deviceRadixSortBits)
+            // Sorting the high 16 bits gives a stable, monotonic depth quantization.
+            // Two passes also leave the result in the caller-owned input buffers.
+            uint firstRadixShift = args.Approximate16Bit ? 16u : 0u;
+            for (uint radixShift = firstRadixShift; radixShift < 32; radixShift += k_deviceRadixSortBits)
             {
                 cmd.SetComputeIntParam(m_CS, k_eRadixShift, (int)radixShift);
 

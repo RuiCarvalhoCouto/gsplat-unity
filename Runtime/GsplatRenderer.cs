@@ -37,6 +37,8 @@ namespace Gsplat
             "Shrinks spatial chunk bounds toward their Gaussian centers. 0 preserves conservative visibility; higher values can improve rejection at the cost of edge popping.")]
         [Range(0, 1)]
         public float ChunkCullingAggressiveness;
+        [Tooltip("Uses the exact 32-bit depth sort instead of the hybrid renderer's faster 16-bit sort.")]
+        public bool UseExactDepthSort;
         public bool AsyncUpload;
         public bool RenderBeforeUploadComplete = true;
 
@@ -93,6 +95,7 @@ namespace Gsplat
         internal GraphicsBuffer HierarchyCountsBuffer => m_renderer?.HierarchyCountsBuffer;
         internal bool HierarchicalCullingActive => m_renderer is { HierarchicalCullingActive: true };
         internal bool LodCullingActive => m_renderer is { LodCullingActive: true };
+        internal bool ApproximateDepthSort => LodCullingActive && !UseExactDepthSort;
         internal GraphicsBuffer SortDispatchArgs => m_renderer?.SortDispatchArgs;
         public GsplatSortMode SortMode = GsplatSortMode.Always;
         [HideInInspector] public uint SortRefreshRate = 1;
@@ -195,7 +198,8 @@ namespace Gsplat
                     m_warnedFrustumCullingUnavailable = false;
                 m_renderer.SetFrustumCulling(EnableFrustumCulling && cullingSupported);
                 m_renderer.NotifyTransform(transform);
-                m_renderer.EvaluateRefreshRequired(SortMode, SortRefreshRate - 1, CutoutsRefreshRate - 1);
+                m_renderer.EvaluateRefreshRequired(SortMode, SortRefreshRate - 1, CutoutsRefreshRate - 1,
+                    ApproximateDepthSort);
                 m_renderer.DispatchInitOrder(Cutouts, transform.localToWorldMatrix, CutoutsUpdateBounds);
                 // When the global sorter has merged all renderers into a single draw call,
                 // skip the per-renderer draw — GsplatSorter.DrawAll handles rendering.
