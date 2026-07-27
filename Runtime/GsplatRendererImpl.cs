@@ -112,6 +112,7 @@ namespace Gsplat
         Matrix4x4 m_previousLodMatrix;
         bool m_hasRenderMatrix;
         Matrix4x4 m_previousRenderMatrix;
+        Camera[] m_cameras = Array.Empty<Camera>();
 
         static readonly int k_orderBuffer = Shader.PropertyToID("_OrderBuffer");
         static readonly int k_matrixM = Shader.PropertyToID("_MATRIX_M");
@@ -383,7 +384,8 @@ namespace Gsplat
             else
                 CullFlat(cmd, cs);
 
-            BuildRenderArgs(cmd, cs);
+            if (!LodCullingActive)
+                BuildRenderArgs(cmd, cs);
         }
 
         internal void Project(CommandBuffer cmd, in GsplatCameraInfo cameraInfo, Transform transform,
@@ -566,6 +568,11 @@ namespace Gsplat
 
         void ProjectVisibleSplats(CommandBuffer cmd, ComputeShader cs, GsplatResource resource, int shDegree)
         {
+            var mesh = GsplatSettings.Instance.Mesh;
+            cmd.SetComputeIntParam(cs, k_splatInstanceSize, (int)GsplatSettings.Instance.SplatInstanceSize);
+            cmd.SetComputeIntParam(cs, k_indexCountPerInstance, (int)mesh.GetIndexCount(0));
+            cmd.SetComputeIntParam(cs, k_startIndex, (int)mesh.GetIndexStart(0));
+            cmd.SetComputeIntParam(cs, k_baseVertex, (int)mesh.GetBaseVertex(0));
             cmd.SetComputeIntParam(cs, k_shDegree, Math.Min(m_gsplatAsset.SHBands, shDegree));
             cmd.SetComputeIntParam(cs, k_shCoefficientCount,
                 GsplatUtils.SHBandsToCoefficientCount(m_gsplatAsset.SHBands));
@@ -573,6 +580,9 @@ namespace Gsplat
                 VisibleCountBuffer);
             cmd.SetComputeBufferParam(cs, m_kernelBuildProjectionArgs, k_projectionDispatchArgs,
                 m_projectionDispatchArgs);
+            cmd.SetComputeBufferParam(cs, m_kernelBuildProjectionArgs, k_sortDispatchArgs,
+                SortDispatchArgs);
+            cmd.SetComputeBufferParam(cs, m_kernelBuildProjectionArgs, k_drawArgs, DrawArgs);
             cmd.DispatchCompute(cs, m_kernelBuildProjectionArgs, 1, 1, 1);
 
             cmd.SetComputeBufferParam(cs, m_kernelProjectVisible, k_visibleCountBuffer, VisibleCountBuffer);
@@ -895,8 +905,13 @@ namespace Gsplat
             float rotationThreshold = precise
                 ? Mathf.Min(GsplatSettings.Instance.CameraRotationRefreshTreshold, 0.5f)
                 : GsplatSettings.Instance.CameraRotationRefreshTreshold;
-            foreach (var cam in Camera.allCameras)
+            int cameraCount = Camera.allCamerasCount;
+            if (m_cameras.Length < cameraCount)
+                Array.Resize(ref m_cameras, cameraCount);
+            cameraCount = Camera.GetAllCameras(m_cameras);
+            for (int cameraIndex = 0; cameraIndex < cameraCount; ++cameraIndex)
             {
+                Camera cam = m_cameras[cameraIndex];
                 var id = GsplatUtils.GetObjectId(cam);
                 if (m_prevCamTransforms.TryGetValue(id, out (Vector3, Quaternion) prevCamTransform))
                 {

@@ -245,8 +245,9 @@ namespace Gsplat
 #endif
 
             m_activeGsplats.Clear();
-            foreach (var gs in m_gsplats.Where(gs => gs is { isActiveAndEnabled: true, Valid: true }))
-                m_activeGsplats.Add(gs);
+            foreach (var gs in m_gsplats)
+                if (gs is { isActiveAndEnabled: true, Valid: true })
+                    m_activeGsplats.Add(gs);
 
             return m_activeGsplats.Count != 0;
         }
@@ -391,8 +392,9 @@ namespace Gsplat
                                   m_activeGsplats.Count >= 2;
             if (!GlobalRenderEnabled) return;
             m_activeGsplats.Clear();
-            foreach (var gs in m_gsplats.Where(gs => gs is { isActiveAndEnabled: true, Valid: true }))
-                m_activeGsplats.Add(gs);
+            foreach (var gs in m_gsplats)
+                if (gs is { isActiveAndEnabled: true, Valid: true })
+                    m_activeGsplats.Add(gs);
             GlobalRenderEnabled = GlobalRenderEnabled && CanRenderGlobally();
             if (!GlobalRenderEnabled) return;
             m_globalRenderer.Update(m_activeGsplats);

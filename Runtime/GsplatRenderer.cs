@@ -1,6 +1,7 @@
 ﻿// Copyright (c) 2025 Yize Wu
 // SPDX-License-Identifier: MIT
 
+using System;
 using System.Linq;
 using UnityEditor;
 using UnityEngine;
@@ -88,6 +89,8 @@ namespace Gsplat
         {
             get
             {
+                if (GsplatCutout.m_RegisteredCutouts.Count == 0)
+                    return Array.Empty<GsplatCutout>();
                 var cutouts = GsplatCutout.m_RegisteredCutouts
                     .Where(component => component.enabled)
                     .Where(component =>

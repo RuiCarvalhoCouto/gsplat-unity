@@ -915,6 +915,25 @@ ProjectedSplat ProjectSplat(float3 position, float3 scale, float4 rotation, floa
     return output;
 }
 
+void StoreRenderArgs(uint visibleCount)
+{
+    uint sortGroups = max(1u, (visibleCount + 3839u) / 3840u);
+    _SortDispatchArgs.Store(0, sortGroups);
+    _SortDispatchArgs.Store(4, 1);
+    _SortDispatchArgs.Store(8, 1);
+
+    IndirectDrawIndexedArgs drawArgs;
+    drawArgs.indexCountPerInstance = _IndexCountPerInstance;
+    drawArgs.instanceCount = (visibleCount + _SplatInstanceSize - 1u) / _SplatInstanceSize;
+#if defined(STEREO_INSTANCING_ON)
+    drawArgs.instanceCount *= 2u;
+#endif
+    drawArgs.startIndex = _StartIndex;
+    drawArgs.baseVertexIndex = _BaseVertex;
+    drawArgs.startInstance = 0;
+    _DrawArgs[0] = drawArgs;
+}
+
 [numthreads(1, 1, 1)]
 void BuildProjectionArgs(uint3 id : SV_DispatchThreadID)
 {
@@ -923,6 +942,7 @@ void BuildProjectionArgs(uint3 id : SV_DispatchThreadID)
         max(1u, (visibleCount + PROJECTION_GROUP_SIZE - 1u) / PROJECTION_GROUP_SIZE));
     _ProjectionDispatchArgs.Store(4, 1);
     _ProjectionDispatchArgs.Store(8, 1);
+    StoreRenderArgs(visibleCount);
 }
 
 void StoreProjectedViews(uint slot, float3 position, float3 scale, float4 rotation, float4 color,
@@ -1018,19 +1038,5 @@ void ProjectVisibleSpark(uint3 id : SV_DispatchThreadID)
 void BuildArgs(uint3 id : SV_DispatchThreadID)
 {
     uint visibleCount = _VisibleCountBuffer.Load(0);
-    uint sortGroups = max(1u, (visibleCount + 3839u) / 3840u);
-    _SortDispatchArgs.Store(0, sortGroups);
-    _SortDispatchArgs.Store(4, 1);
-    _SortDispatchArgs.Store(8, 1);
-
-    IndirectDrawIndexedArgs drawArgs;
-    drawArgs.indexCountPerInstance = _IndexCountPerInstance;
-    drawArgs.instanceCount = (visibleCount + _SplatInstanceSize - 1u) / _SplatInstanceSize;
-#if defined(STEREO_INSTANCING_ON)
-    drawArgs.instanceCount *= 2u;
-#endif
-    drawArgs.startIndex = _StartIndex;
-    drawArgs.baseVertexIndex = _BaseVertex;
-    drawArgs.startInstance = 0;
-    _DrawArgs[0] = drawArgs;
+    StoreRenderArgs(visibleCount);
 }
