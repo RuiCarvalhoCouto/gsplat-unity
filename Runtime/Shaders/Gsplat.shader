@@ -40,6 +40,7 @@ Shader "Gsplat/Standard"
             bool _GammaToLinear;
             bool _UseVisibleCount;
             int _SplatCount;
+            int _OriginalSplatCount;
             int _SplatInstanceSize;
             int _SHDegree;
             float4x4 _MATRIX_M;
@@ -98,14 +99,23 @@ Shader "Gsplat/Standard"
                 SplatCenter center;
                 SplatCorner corner;
                 float4 color;
-                if (!InitSplatData(source, mul(UNITY_MATRIX_V, _MATRIX_M), center, corner, color))
+                bool isLod = source.id >= (uint)_OriginalSplatCount;
+                uint dataId = isLod ? source.id - (uint)_OriginalSplatCount : source.id;
+                float4x4 modelView = mul(UNITY_MATRIX_V, _MATRIX_M);
+                bool initialized = isLod
+                    ? InitLodSplatData(source, dataId, modelView, center, corner, color)
+                    : InitSplatData(source, modelView, center, corner, color);
+                if (!initialized)
                     return o;
 
                 #ifndef SH_BANDS_0
                 // calculate the model-space view direction
                 float3 dir = normalize(mul(center.view, (float3x3)center.modelView));
                 float3 sh[SH_COEFFS];
-                InitSH(source.id, sh);
+                if (isLod)
+                    InitLodSH(dataId, sh);
+                else
+                    InitSH(source.id, sh);
                 color.rgb += EvalSH(sh, dir, _SHDegree);
                 #endif
 

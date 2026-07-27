@@ -18,8 +18,9 @@ namespace Gsplat
         public readonly Matrix4x4 ViewMatrix1;
         public readonly Matrix4x4 ProjectionMatrix0;
         public readonly Matrix4x4 ProjectionMatrix1;
+        public readonly bool SupportsHybridLod;
 
-        public GsplatCameraInfo(Camera camera)
+        public GsplatCameraInfo(Camera camera, bool supportsHybridLod = false)
         {
             bool stereo = camera.stereoEnabled;
             ViewCount = stereo ? 2 : 1;
@@ -37,10 +38,12 @@ namespace Gsplat
             ProjectionMatrix1 = stereo
                 ? GL.GetGPUProjectionMatrix(camera.GetStereoProjectionMatrix(Camera.StereoscopicEye.Right), false)
                 : ProjectionMatrix0;
+            SupportsHybridLod = supportsHybridLod;
         }
 
         public GsplatCameraInfo(Camera camera, int viewCount, Vector2 viewportSize, Matrix4x4 viewMatrix0,
-            Matrix4x4 projectionMatrix0, Matrix4x4 viewMatrix1, Matrix4x4 projectionMatrix1)
+            Matrix4x4 projectionMatrix0, Matrix4x4 viewMatrix1, Matrix4x4 projectionMatrix1,
+            bool supportsHybridLod = false)
         {
             ViewCount = viewCount;
             ViewportSize = viewportSize;
@@ -49,6 +52,7 @@ namespace Gsplat
             ViewMatrix1 = viewMatrix1;
             ProjectionMatrix0 = projectionMatrix0;
             ProjectionMatrix1 = projectionMatrix1;
+            SupportsHybridLod = supportsHybridLod;
         }
     }
 
@@ -243,6 +247,11 @@ namespace Gsplat
         public void DispatchSort(CommandBuffer cmd, Camera camera)
         {
             DispatchSort(cmd, new GsplatCameraInfo(camera));
+        }
+
+        internal void DispatchSortUrp(CommandBuffer cmd, Camera camera)
+        {
+            DispatchSort(cmd, new GsplatCameraInfo(camera, true));
         }
 
         internal void DispatchSort(CommandBuffer cmd, in GsplatCameraInfo cameraInfo)

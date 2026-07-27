@@ -9,6 +9,41 @@ using Vector3 = UnityEngine.Vector3;
 
 namespace Gsplat
 {
+    static class GsplatLodBudget
+    {
+        const float k_TargetGpuMs = 12.5f;
+        const float k_MinErrorPixels = 0.5f;
+        const float k_MaxErrorPixels = 8.0f;
+        static readonly FrameTiming[] s_timings = new FrameTiming[1];
+        static int s_lastFrame = -1;
+        static float s_errorPixels = 1.0f;
+
+        public static float ErrorPixels
+        {
+            get
+            {
+                Update();
+                return s_errorPixels;
+            }
+        }
+
+        static void Update()
+        {
+            if (s_lastFrame == Time.frameCount)
+                return;
+            s_lastFrame = Time.frameCount;
+            FrameTimingManager.CaptureFrameTimings();
+            if (FrameTimingManager.GetLatestTimings(1, s_timings) == 0)
+                return;
+
+            double gpuMs = s_timings[0].gpuFrameTime;
+            if (gpuMs > k_TargetGpuMs + 0.5)
+                s_errorPixels = Mathf.Min(k_MaxErrorPixels, s_errorPixels * 1.08f);
+            else if (gpuMs > 0 && gpuMs < k_TargetGpuMs - 1.0)
+                s_errorPixels = Mathf.Max(k_MinErrorPixels, s_errorPixels / 1.04f);
+        }
+    }
+
     public class GsplatRendererImpl
     {
         sealed class CandidateOrderResource : ISorterResource
@@ -41,6 +76,7 @@ namespace Gsplat
         public bool FrustumCullingActive { get; private set; }
         public bool HierarchicalCullingActive => FrustumCullingActive &&
                                                  GsplatResource is { HasSpatialHierarchy: true };
+        public bool LodCullingActive { get; private set; }
         public GraphicsBuffer HierarchyCountsBuffer => m_hierarchyCountsBuffer;
 
         GraphicsBuffer m_candidateOrderBuffer;
@@ -53,8 +89,15 @@ namespace Gsplat
         GraphicsBuffer m_intersectLeafNodes;
         GraphicsBuffer m_hierarchyCountsBuffer;
         GraphicsBuffer m_hierarchyDispatchArgs;
+        GraphicsBuffer m_lodNodeQueueA;
+        GraphicsBuffer m_lodNodeQueueB;
+        GraphicsBuffer m_lodSelectedNodes;
+        GraphicsBuffer m_lodTraversalCounts;
+        GraphicsBuffer m_lodDispatchArgs;
         int m_orderInitializationMode;
         bool m_useActiveMask;
+        bool m_hasLodMatrix;
+        Matrix4x4 m_previousLodMatrix;
 
         static readonly int k_orderBuffer = Shader.PropertyToID("_OrderBuffer");
         static readonly int k_matrixM = Shader.PropertyToID("_MATRIX_M");
@@ -105,6 +148,21 @@ namespace Gsplat
         static readonly int k_intersectLeafNodes = Shader.PropertyToID("_IntersectLeafNodes");
         static readonly int k_hierarchyCounts = Shader.PropertyToID("_HierarchyCounts");
         static readonly int k_hierarchyDispatchArgs = Shader.PropertyToID("_HierarchyDispatchArgs");
+        static readonly int k_lodNodesBuffer = Shader.PropertyToID("_LodNodesBuffer");
+        static readonly int k_lodSplatsBuffer = Shader.PropertyToID("_LodSplatsBuffer");
+        static readonly int k_lodShBuffer = Shader.PropertyToID("_LodSHBuffer");
+        static readonly int k_lodNodeQueueInput = Shader.PropertyToID("_LodNodeQueueInput");
+        static readonly int k_lodNodeQueueOutput = Shader.PropertyToID("_LodNodeQueueOutput");
+        static readonly int k_lodSelectedNodes = Shader.PropertyToID("_LodSelectedNodes");
+        static readonly int k_lodTraversalCounts = Shader.PropertyToID("_LodTraversalCounts");
+        static readonly int k_lodDispatchArgs = Shader.PropertyToID("_LodDispatchArgs");
+        static readonly int k_lodRootNode = Shader.PropertyToID("_LodRootNode");
+        static readonly int k_lodCurrentCountOffset = Shader.PropertyToID("_LodCurrentCountOffset");
+        static readonly int k_lodNextCountOffset = Shader.PropertyToID("_LodNextCountOffset");
+        static readonly int k_lodErrorPixels = Shader.PropertyToID("_LodErrorPixels");
+        static readonly int k_minProjectedRadiusPixels = Shader.PropertyToID("_MinProjectedRadiusPixels");
+        static readonly int k_minContribution = Shader.PropertyToID("_MinContribution");
+        static readonly int k_originalSplatCount = Shader.PropertyToID("_OriginalSplatCount");
 
         int m_kernelCullClear = -1;
         int m_kernelCull = -1;
@@ -114,6 +172,11 @@ namespace Gsplat
         int m_kernelCullLeaves = -1;
         int m_kernelBuildSplatArgs = -1;
         int m_kernelProcessHierarchy = -1;
+        int m_kernelLodClear = -1;
+        int m_kernelLodClearNext = -1;
+        int m_kernelLodTraverse = -1;
+        int m_kernelLodBuildExpandArgs = -1;
+        int m_kernelLodExpand = -1;
         int m_kernelBuildArgs = -1;
 
         uint m_framesBeforeRecomputeSort = 0;
@@ -275,12 +338,31 @@ namespace Gsplat
             cmd.SetComputeMatrixParam(cs, k_matrixP0, cameraInfo.ProjectionMatrix0);
             cmd.SetComputeMatrixParam(cs, k_matrixP1, cameraInfo.ProjectionMatrix1);
 
-            if (HierarchicalCullingActive)
+            LodCullingActive = CanUseLod(cameraInfo, matrixM);
+            if (LodCullingActive)
+                CullLod(cmd, cs, Mathf.Clamp01(chunkCullingAggressiveness));
+            else if (HierarchicalCullingActive)
                 CullHierarchy(cmd, cs, Mathf.Clamp01(chunkCullingAggressiveness));
             else
                 CullFlat(cmd, cs);
 
             BuildRenderArgs(cmd, cs);
+        }
+
+        bool CanUseLod(in GsplatCameraInfo cameraInfo, Matrix4x4 matrix)
+        {
+            bool matrixStable = m_hasLodMatrix && m_previousLodMatrix == matrix;
+            m_previousLodMatrix = matrix;
+            m_hasLodMatrix = true;
+            return cameraInfo.SupportsHybridLod && !GsplatSorter.Instance.GlobalRenderEnabled &&
+                   matrixStable && m_cutoutsData.Length == 0 &&
+                   GsplatResource is
+                   {
+                       SpatialLodSplatCount: > 0,
+                       SpatialLodNodesBuffer: not null,
+                       SpatialLodSplatsBuffer: not null
+                   } &&
+                   GsplatResource.UploadedCount == SplatCount;
         }
 
         void CullFlat(CommandBuffer cmd, ComputeShader cs)
@@ -354,6 +436,67 @@ namespace Gsplat
             cmd.DispatchCompute(cs, m_kernelProcessHierarchy, m_hierarchyDispatchArgs, sizeof(uint) * 6);
         }
 
+        void CullLod(CommandBuffer cmd, ComputeShader cs, float aggressiveness)
+        {
+            var resource = GsplatResource;
+            GraphicsBuffer activeMask = m_useActiveMask ? m_activeMaskBuffer : m_dummyActiveMaskBuffer;
+            cmd.SetComputeIntParam(cs, k_uploadedCount, (int)resource.UploadedCount);
+            cmd.SetComputeIntParam(cs, k_useActiveMask, m_useActiveMask ? 1 : 0);
+            cmd.SetComputeIntParam(cs, k_lodRootNode, (int)resource.SpatialLodRoot);
+            cmd.SetComputeFloatParam(cs, k_chunkCullingAggressiveness, aggressiveness);
+            cmd.SetComputeFloatParam(cs, k_lodErrorPixels, GsplatLodBudget.ErrorPixels);
+            cmd.SetComputeFloatParam(cs, k_minProjectedRadiusPixels, 0.5f);
+            cmd.SetComputeFloatParam(cs, k_minContribution, 0.0f);
+
+            cmd.SetComputeBufferParam(cs, m_kernelLodClear, k_visibleCountBuffer, VisibleCountBuffer);
+            cmd.SetComputeBufferParam(cs, m_kernelLodClear, k_lodTraversalCounts, m_lodTraversalCounts);
+            cmd.SetComputeBufferParam(cs, m_kernelLodClear, k_lodNodeQueueInput, m_lodNodeQueueA);
+            cmd.DispatchCompute(cs, m_kernelLodClear, 1, 1, 1);
+
+            GraphicsBuffer input = m_lodNodeQueueA;
+            GraphicsBuffer output = m_lodNodeQueueB;
+            int inputOffset = 0;
+            int outputOffset = sizeof(uint);
+            int traversalGroups = (int)GsplatUtils.DivRoundUp((uint)resource.SpatialLodNodeCount, 256);
+            for (int level = 0; level < resource.SpatialLodLevelCount; ++level)
+            {
+                cmd.SetComputeIntParam(cs, k_lodNextCountOffset, outputOffset);
+                cmd.SetComputeBufferParam(cs, m_kernelLodClearNext, k_lodTraversalCounts, m_lodTraversalCounts);
+                cmd.DispatchCompute(cs, m_kernelLodClearNext, 1, 1, 1);
+
+                cmd.SetComputeIntParam(cs, k_lodCurrentCountOffset, inputOffset);
+                cmd.SetComputeIntParam(cs, k_lodNextCountOffset, outputOffset);
+                cmd.SetComputeBufferParam(cs, m_kernelLodTraverse, k_lodNodesBuffer,
+                    resource.SpatialLodNodesBuffer);
+                cmd.SetComputeBufferParam(cs, m_kernelLodTraverse, k_lodNodeQueueInput, input);
+                cmd.SetComputeBufferParam(cs, m_kernelLodTraverse, k_lodNodeQueueOutput, output);
+                cmd.SetComputeBufferParam(cs, m_kernelLodTraverse, k_lodSelectedNodes, m_lodSelectedNodes);
+                cmd.SetComputeBufferParam(cs, m_kernelLodTraverse, k_lodTraversalCounts, m_lodTraversalCounts);
+                cmd.DispatchCompute(cs, m_kernelLodTraverse, traversalGroups, 1, 1);
+
+                (input, output) = (output, input);
+                (inputOffset, outputOffset) = (outputOffset, inputOffset);
+            }
+
+            cmd.SetComputeBufferParam(cs, m_kernelLodBuildExpandArgs, k_lodTraversalCounts,
+                m_lodTraversalCounts);
+            cmd.SetComputeBufferParam(cs, m_kernelLodBuildExpandArgs, k_lodDispatchArgs, m_lodDispatchArgs);
+            cmd.DispatchCompute(cs, m_kernelLodBuildExpandArgs, 1, 1, 1);
+
+            cmd.SetComputeBufferParam(cs, m_kernelLodExpand, k_lodNodesBuffer,
+                resource.SpatialLodNodesBuffer);
+            cmd.SetComputeBufferParam(cs, m_kernelLodExpand, k_lodSplatsBuffer,
+                resource.SpatialLodSplatsBuffer);
+            cmd.SetComputeBufferParam(cs, m_kernelLodExpand, k_lodSelectedNodes, m_lodSelectedNodes);
+            cmd.SetComputeBufferParam(cs, m_kernelLodExpand, k_lodTraversalCounts, m_lodTraversalCounts);
+            cmd.SetComputeBufferParam(cs, m_kernelLodExpand, k_activeMaskBuffer, activeMask);
+            cmd.SetComputeBufferParam(cs, m_kernelLodExpand, k_orderBuffer, SorterResource.OrderBuffer);
+            cmd.SetComputeBufferParam(cs, m_kernelLodExpand, k_depthBuffer, SorterResource.InputKeys);
+            cmd.SetComputeBufferParam(cs, m_kernelLodExpand, k_visibleCountBuffer, VisibleCountBuffer);
+            BindSplatDataBuffers(cmd, cs, m_kernelLodExpand);
+            cmd.DispatchCompute(cs, m_kernelLodExpand, m_lodDispatchArgs, 0);
+        }
+
         void BindHierarchyBuffers(CommandBuffer cmd, ComputeShader cs, int kernel, GraphicsBuffer activeMask)
         {
             cmd.SetComputeBufferParam(cs, kernel, k_activeMaskBuffer, activeMask);
@@ -398,6 +541,8 @@ namespace Gsplat
             m_gsplatAsset = gsplatAsset;
             GsplatResource = GsplatResourceManager.Get(gsplatAsset);
             gsplatAsset.SetupMaterialPropertyBlock(m_propertyBlock, GsplatResource);
+            m_propertyBlock.SetBuffer(k_lodSplatsBuffer, GsplatResource.SpatialLodSplatsBuffer);
+            m_propertyBlock.SetBuffer(k_lodShBuffer, GsplatResource.SpatialLodSHBuffer);
             if (FrustumCullingActive)
             {
                 DisposeCullingResources();
@@ -476,6 +621,18 @@ namespace Gsplat
             m_hierarchyCountsBuffer.SetData(new uint[4]);
             m_hierarchyDispatchArgs = new GraphicsBuffer(GraphicsBuffer.Target.IndirectArguments, 9, sizeof(uint));
             m_hierarchyDispatchArgs.SetData(new uint[9]);
+            if (GsplatResource.SpatialLodSplatCount > 0)
+            {
+                int nodeCount = GsplatResource.SpatialLodNodeCount;
+                m_lodNodeQueueA = new GraphicsBuffer(GraphicsBuffer.Target.Structured, nodeCount, sizeof(uint));
+                m_lodNodeQueueB = new GraphicsBuffer(GraphicsBuffer.Target.Structured, nodeCount, sizeof(uint));
+                m_lodSelectedNodes = new GraphicsBuffer(GraphicsBuffer.Target.Structured,
+                    GsplatResource.SpatialLeafCount, sizeof(uint));
+                m_lodTraversalCounts = new GraphicsBuffer(GraphicsBuffer.Target.Raw, 4, sizeof(uint));
+                m_lodTraversalCounts.SetData(new uint[4]);
+                m_lodDispatchArgs = new GraphicsBuffer(GraphicsBuffer.Target.IndirectArguments, 3, sizeof(uint));
+                m_lodDispatchArgs.SetData(new uint[3]);
+            }
             m_dummyActiveMaskBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1, sizeof(uint));
             m_dummyActiveMaskBuffer.SetData(new uint[1]);
         }
@@ -502,6 +659,13 @@ namespace Gsplat
             m_kernelProcessHierarchy = cs.FindKernel(GsplatResource is GsplatResourceSpark
                 ? "ProcessHierarchySpark"
                 : "ProcessHierarchyUncompressed");
+            m_kernelLodClear = cs.FindKernel("ClearLodTraversal");
+            m_kernelLodClearNext = cs.FindKernel("ClearLodNext");
+            m_kernelLodTraverse = cs.FindKernel("TraverseLod");
+            m_kernelLodBuildExpandArgs = cs.FindKernel("BuildLodExpandArgs");
+            m_kernelLodExpand = cs.FindKernel(GsplatResource is GsplatResourceSpark
+                ? "ExpandLodSelectionSpark"
+                : "ExpandLodSelectionUncompressed");
             m_kernelBuildArgs = cs.FindKernel("BuildArgs");
         }
 
@@ -526,12 +690,24 @@ namespace Gsplat
             m_hierarchyCountsBuffer = null;
             m_hierarchyDispatchArgs?.Dispose();
             m_hierarchyDispatchArgs = null;
+            m_lodNodeQueueA?.Dispose();
+            m_lodNodeQueueA = null;
+            m_lodNodeQueueB?.Dispose();
+            m_lodNodeQueueB = null;
+            m_lodSelectedNodes?.Dispose();
+            m_lodSelectedNodes = null;
+            m_lodTraversalCounts?.Dispose();
+            m_lodTraversalCounts = null;
+            m_lodDispatchArgs?.Dispose();
+            m_lodDispatchArgs = null;
             SortDispatchArgs?.Dispose();
             SortDispatchArgs = null;
             DrawArgs?.Dispose();
             DrawArgs = null;
             m_useActiveMask = false;
             m_orderInitializationMode = 0;
+            LodCullingActive = false;
+            m_hasLodMatrix = false;
         }
 
         public void Dispose()
@@ -637,6 +813,7 @@ namespace Gsplat
                 return;
 
             m_propertyBlock.SetInteger(k_splatCount, (int)m_remainingCount);
+            m_propertyBlock.SetInteger(k_originalSplatCount, (int)SplatCount);
             m_propertyBlock.SetInteger(k_gammaToLinear, gammaToLinear ? 1 : 0);
             m_propertyBlock.SetInteger(k_splatInstanceSize, (int)GsplatSettings.Instance.SplatInstanceSize);
             m_propertyBlock.SetInteger(k_shDegree, Math.Min(m_gsplatAsset.SHBands, shDegree));

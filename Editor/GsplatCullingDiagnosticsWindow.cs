@@ -25,6 +25,7 @@ namespace Gsplat
         uint m_intersectLeafCount;
         uint m_exactTestCount;
         bool m_requestHierarchical;
+        bool m_requestLod;
         bool m_visibleReadbackComplete;
         bool m_hierarchyReadbackComplete;
         bool m_hasSample;
@@ -131,7 +132,8 @@ namespace Gsplat
             var buffer = m_renderer.VisibleCountBuffer;
             m_requestRendererId = GsplatUtils.GetObjectId(m_renderer);
             m_requestCandidateCount = m_renderer.RemainingCount;
-            m_requestHierarchical = m_renderer.HierarchicalCullingActive &&
+            m_requestLod = m_renderer.LodCullingActive;
+            m_requestHierarchical = !m_requestLod && m_renderer.HierarchicalCullingActive &&
                                     m_renderer.HierarchyCountsBuffer != null;
             m_requestLabel = m_sampleLabel;
             m_requestPending = true;
@@ -273,7 +275,7 @@ namespace Gsplat
                     m_renderer.SHDegree.ToString(CultureInfo.InvariantCulture),
                     Screen.width.ToString(CultureInfo.InvariantCulture),
                     Screen.height.ToString(CultureInfo.InvariantCulture),
-                    Csv(m_requestHierarchical ? "Hierarchy" : "Flat"),
+                    Csv(m_requestLod ? "LOD" : m_requestHierarchical ? "Hierarchy" : "Flat"),
                     (asset && asset.HasSpatialHierarchy ? asset.SpatialChunkSize : 0)
                     .ToString(CultureInfo.InvariantCulture),
                     m_renderer.ChunkCullingAggressiveness.ToString("F3", CultureInfo.InvariantCulture),

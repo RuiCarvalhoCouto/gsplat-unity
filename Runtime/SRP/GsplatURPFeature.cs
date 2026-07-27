@@ -41,7 +41,7 @@ namespace Gsplat
             static GsplatCameraInfo GetCameraInfo(UniversalCameraData cameraData)
             {
                 if (!cameraData.xr.enabled)
-                    return new GsplatCameraInfo(cameraData.camera);
+                    return new GsplatCameraInfo(cameraData.camera, true);
 
                 Rect viewport = cameraData.xr.GetViewport(0);
                 if (cameraData.xr.singlePassEnabled)
@@ -50,19 +50,19 @@ namespace Gsplat
                     Matrix4x4 view = cullingParams.stereoViewMatrix;
                     Matrix4x4 projection = GL.GetGPUProjectionMatrix(cullingParams.stereoProjectionMatrix, false);
                     return new GsplatCameraInfo(cameraData.camera, 1, viewport.size, view, projection,
-                        view, projection);
+                        view, projection, true);
                 }
 
                 Matrix4x4 view0 = cameraData.GetViewMatrix(0);
                 Matrix4x4 projection0 = GL.GetGPUProjectionMatrix(cameraData.GetProjectionMatrix(0), false);
                 return new GsplatCameraInfo(cameraData.camera, 1, viewport.size, view0, projection0,
-                    view0, projection0);
+                    view0, projection0, true);
             }
 #else
             public CommandBuffer CommandBuffer;
             public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
             {
-                GsplatSorter.Instance.DispatchSort(CommandBuffer, renderingData.cameraData.camera);
+                GsplatSorter.Instance.DispatchSortUrp(CommandBuffer, renderingData.cameraData.camera);
                 context.ExecuteCommandBuffer(CommandBuffer);
             }
 #endif

@@ -38,6 +38,17 @@ struct SplatCorner
     #endif
 };
 
+struct LodSplat
+{
+    float4 positionOpacity;
+    float4 scaleContribution;
+    float4 rotation;
+    float4 color;
+};
+
+StructuredBuffer<LodSplat> _LodSplatsBuffer;
+StructuredBuffer<float3> _LodSHBuffer;
+
 const float4 discardVec = float4(0.0, 0.0, 2.0, 1.0);
 
 bool InitCenter(float4x4 modelView, float3 modelCenter, out SplatCenter center)
@@ -191,6 +202,20 @@ void ClipCorner(inout SplatCorner corner, float alpha)
 
 #define SH_C0 0.28209479177387814f
 
+bool InitLodSplatData(SplatSource source, uint id, float4x4 modelView, out SplatCenter center,
+                      out SplatCorner corner,
+                      out float4 color)
+{
+    LodSplat splat = _LodSplatsBuffer[id];
+    if (!InitCenter(modelView, splat.positionOpacity.xyz, center))
+        return false;
+    if (!InitCorner(source, CalcCovariance(splat.rotation, max(splat.scaleContribution.xyz, 1e-6)),
+            center, corner))
+        return false;
+    color = splat.color;
+    return true;
+}
+
 #ifndef SH_BANDS_0
 #define SH_C1 0.4886025119029199f
 #define SH_C2_0 1.0925484305920792f
@@ -217,6 +242,12 @@ void ClipCorner(inout SplatCorner corner, float alpha)
 #define SH_C4_6 0.47308734787878004f     // m=+2: +K_{4,2+}, polynomial (x²-y²)(7z²-1)
 #define SH_C4_7 -1.7701307697799304f     // m=+3: -K_{4,3}
 #define SH_C4_8 0.6258357354491761f      // m=+4: +K_{4,4}
+
+void InitLodSH(uint id, out float3 sh[SH_COEFFS])
+{
+    for (int i = 0; i < SH_COEFFS; ++i)
+        sh[i] = _LodSHBuffer[id * SH_COEFFS + i];
+}
 
 // see https://github.com/graphdeco-inria/gaussian-splatting/blob/main/utils/sh_utils.py
 float3 EvalSH(const inout float3 sh[SH_COEFFS], float3 dir, int degree = 3)

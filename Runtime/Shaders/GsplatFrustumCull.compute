@@ -4,6 +4,8 @@
 #define GROUP_SIZE 256
 #define COARSE_LEAF_COUNT 64
 #define NODE_FULLY_INSIDE 0x80000000u
+#define NODE_LOD_REPRESENTATIVES 0x40000000u
+#define NODE_INDEX_MASK 0x3fffffffu
 
 #include "UnityIndirect.cginc"
 
@@ -17,6 +19,12 @@
 #pragma kernel BuildSplatArgs
 #pragma kernel ProcessHierarchyUncompressed
 #pragma kernel ProcessHierarchySpark
+#pragma kernel ClearLodTraversal
+#pragma kernel ClearLodNext
+#pragma kernel TraverseLod
+#pragma kernel BuildLodExpandArgs
+#pragma kernel ExpandLodSelectionUncompressed
+#pragma kernel ExpandLodSelectionSpark
 #pragma kernel BuildArgs
 #pragma multi_compile _ STEREO_INSTANCING_ON STEREO_MULTIVIEW_ON
 
@@ -35,7 +43,13 @@ uint _SpatialChunkSize;
 uint _GroupsPerLeaf;
 uint _ExactTest;
 uint _LeafListCountOffset;
+uint _LodRootNode;
+uint _LodCurrentCountOffset;
+uint _LodNextCountOffset;
 float _ChunkCullingAggressiveness;
+float _LodErrorPixels;
+float _MinProjectedRadiusPixels;
+float _MinContribution;
 float2 _ViewportSize;
 float4x4 _MatrixMV0;
 float4x4 _MatrixMV1;
@@ -58,8 +72,37 @@ struct SpatialNode
     float4 footprintMax;
 };
 
+struct LodNode
+{
+    SpatialNode bounds;
+    float4 metrics;
+    uint firstChild;
+    uint childCount;
+    uint firstSplat;
+    uint splatCount;
+    uint firstRepresentative;
+    uint representativeCount;
+    uint level;
+    uint padding;
+};
+
+struct LodSplat
+{
+    float4 positionOpacity;
+    float4 scaleContribution;
+    float4 rotation;
+    float4 color;
+};
+
 StructuredBuffer<SpatialNode> _LeafNodesBuffer;
 StructuredBuffer<SpatialNode> _CoarseNodesBuffer;
+StructuredBuffer<LodNode> _LodNodesBuffer;
+StructuredBuffer<LodSplat> _LodSplatsBuffer;
+RWStructuredBuffer<uint> _LodNodeQueueInput;
+RWStructuredBuffer<uint> _LodNodeQueueOutput;
+RWStructuredBuffer<uint> _LodSelectedNodes;
+RWByteAddressBuffer _LodTraversalCounts;
+RWByteAddressBuffer _LodDispatchArgs;
 RWStructuredBuffer<uint> _VisibleCoarseNodes;
 RWStructuredBuffer<uint> _FullLeafNodes;
 RWStructuredBuffer<uint> _IntersectLeafNodes;
@@ -106,11 +149,12 @@ void CalcCovariance(float3 scale, float4 quat, out float3 covA, out float3 covB)
     covB = float3(dot(m[1], m[1]), dot(m[1], m[2]), dot(m[2], m[2]));
 }
 
-bool ProjectedFootprintOverlapsView(float4 centerView4, float3 covA, float3 covB, float4x4 matrixMV,
-                                    float4x4 matrixP)
+float ProjectedFootprintPixels(float4 centerView4, float3 covA, float3 covB, float4x4 matrixMV,
+                               float4x4 matrixP)
 {
     float3 centerView = centerView4.xyz / centerView4.w;
     float4 centerProj = mul(matrixP, centerView4);
+    bool clipDepthValid = centerProj.w > 0.0 && centerProj.z >= 0.0 && centerProj.z <= centerProj.w;
     float3x3 vrk = float3x3(covA.x, covA.y, covA.z, covA.y, covB.x, covB.y, covA.z, covB.y, covB.z);
 
     float focal = _ViewportSize.x * matrixP[0][0];
@@ -134,7 +178,8 @@ bool ProjectedFootprintOverlapsView(float4 centerView4, float3 covA, float3 covB
     float maxL = max(2.0 * min(sqrt(2.0 * lambda1), vmin),
                      2.0 * min(sqrt(2.0 * lambda2), vmin));
     float2 clipExtent = maxL * centerProj.ww / _ViewportSize;
-    return !any(abs(centerProj.xy) - clipExtent > centerProj.ww);
+    bool overlaps = !any(abs(centerProj.xy) - clipExtent > centerProj.ww);
+    return clipDepthValid && overlaps ? maxL : 0.0;
 }
 
 bool FootprintOverlapsActiveViews(float3 modelCenter, float3 scale, float4 quat)
@@ -153,11 +198,9 @@ bool FootprintOverlapsActiveViews(float3 modelCenter, float3 scale, float4 quat)
     float3 covA;
     float3 covB;
     CalcCovariance(scale, quat, covA, covB);
-    if (canOverlap0 &&
-        ProjectedFootprintOverlapsView(centerView0, covA, covB, _MatrixMV0, _MatrixP0))
+    if (canOverlap0 && ProjectedFootprintPixels(centerView0, covA, covB, _MatrixMV0, _MatrixP0) > 0.0)
         return true;
-    return canOverlap1 &&
-           ProjectedFootprintOverlapsView(centerView1, covA, covB, _MatrixMV1, _MatrixP1);
+    return canOverlap1 && ProjectedFootprintPixels(centerView1, covA, covB, _MatrixMV1, _MatrixP1) > 0.0;
 }
 
 void AppendVisible(uint splatId, float3 position)
@@ -194,38 +237,39 @@ uint ClassifyNodeForView(SpatialNode node, float4x4 matrixMV, float4x4 matrixP)
 
     // Two-pixel side margin covers screen-space covariance blur at view edges.
     float2 margin = 4.0 / max(_ViewportSize, 1.0);
-    float4 planes[5] =
-    {
-        matrixMVP[3] * (1.0 + margin.x) + matrixMVP[0],
-        matrixMVP[3] * (1.0 + margin.x) - matrixMVP[0],
-        matrixMVP[3] * (1.0 + margin.y) + matrixMVP[1],
-        matrixMVP[3] * (1.0 + margin.y) - matrixMVP[1],
-        -matrixMV[2]
-    };
-
     bool fullyInside = true;
-    [unroll]
-    for (uint i = 0; i < 5; ++i)
-    {
-        if (PlaneDistance(planes[i], center, extents) < 0.0)
-            return 0;
-        fullyInside = fullyInside && PlaneInsideDistance(planes[i], center, extents) >= 0.0;
-    }
-    return fullyInside ? 2 : 1;
+    bool outside = false;
+    float4 plane = matrixMVP[3] * (1.0 + margin.x) + matrixMVP[0];
+    outside = outside || PlaneDistance(plane, center, extents) < 0.0;
+    fullyInside = fullyInside && PlaneInsideDistance(plane, center, extents) >= 0.0;
+    plane = matrixMVP[3] * (1.0 + margin.x) - matrixMVP[0];
+    outside = outside || PlaneDistance(plane, center, extents) < 0.0;
+    fullyInside = fullyInside && PlaneInsideDistance(plane, center, extents) >= 0.0;
+    plane = matrixMVP[3] * (1.0 + margin.y) + matrixMVP[1];
+    outside = outside || PlaneDistance(plane, center, extents) < 0.0;
+    fullyInside = fullyInside && PlaneInsideDistance(plane, center, extents) >= 0.0;
+    plane = matrixMVP[3] * (1.0 + margin.y) - matrixMVP[1];
+    outside = outside || PlaneDistance(plane, center, extents) < 0.0;
+    fullyInside = fullyInside && PlaneInsideDistance(plane, center, extents) >= 0.0;
+    plane = matrixMVP[2];
+    outside = outside || PlaneDistance(plane, center, extents) < 0.0;
+    fullyInside = fullyInside && PlaneInsideDistance(plane, center, extents) >= 0.0;
+    plane = matrixMVP[3] - matrixMVP[2];
+    outside = outside || PlaneDistance(plane, center, extents) < 0.0;
+    fullyInside = fullyInside && PlaneInsideDistance(plane, center, extents) >= 0.0;
+    return outside ? 0 : fullyInside ? 2 : 1;
 }
 
 uint ClassifyNode(SpatialNode node)
 {
-    uint view0 = ClassifyNodeForView(node, _MatrixMV0, _MatrixP0);
-    if (view0 == 2)
-        return 2;
-    if (_EyeCount <= 1)
-        return view0;
-
-    uint view1 = ClassifyNodeForView(node, _MatrixMV1, _MatrixP1);
-    if (view1 == 2)
-        return 2;
-    return view0 == 0 && view1 == 0 ? 0 : 1;
+    uint view0 = 0;
+    view0 = ClassifyNodeForView(node, _MatrixMV0, _MatrixP0);
+    uint view1 = 0;
+    if (_EyeCount > 1)
+        view1 = ClassifyNodeForView(node, _MatrixMV1, _MatrixP1);
+    bool fullyInside = view0 == 2 || view1 == 2;
+    bool outside = view0 == 0 && (_EyeCount <= 1 || view1 == 0);
+    return fullyInside ? 2 : outside ? 0 : 1;
 }
 
 [numthreads(1, 1, 1)]
@@ -393,6 +437,255 @@ void ProcessHierarchySpark(uint3 groupId : SV_GroupID, uint3 threadId : SV_Group
         encodedScale.z == 0 ? 0.0 : exp(-12.0 + float(encodedScale.z - 1u) * scaleStep));
     uint encodedRotation = ((word.z >> 16u) & 0xFFFFu) | ((word.w >> 8u) & 0xFF0000u);
     AppendIfVisible(splatId, position, scale, DecodeQuatOctXyz88R8(encodedRotation));
+}
+
+float ProjectedNodeErrorForView(LodNode node, float4x4 matrixMV, float4x4 matrixP)
+{
+    float3 center = (node.bounds.centerMin.xyz + node.bounds.centerMax.xyz) * 0.5;
+    float3 centerView = mul(matrixMV, float4(center, 1.0)).xyz;
+    float focal = abs(matrixP[1][1]) * _ViewportSize.y * 0.5;
+    float error = node.metrics.x * focal / max(-centerView.z, 1e-5);
+    return centerView.z >= -1e-5 ? 3.402823466e+38 : error;
+}
+
+float ProjectedNodeError(LodNode node)
+{
+    float error = 0.0;
+    error = ProjectedNodeErrorForView(node, _MatrixMV0, _MatrixP0);
+    if (_EyeCount > 1)
+        error = max(error, ProjectedNodeErrorForView(node, _MatrixMV1, _MatrixP1));
+    return error;
+}
+
+bool DetailedFootprintVisible(float3 position, float3 scale, float4 rotation, float opacity,
+                              out float depth)
+{
+    float3 covA;
+    float3 covB;
+    CalcCovariance(scale, rotation, covA, covB);
+    float4 position4 = float4(position, 1.0);
+    float maxPixels = 0.0;
+    bool overlaps = false;
+    float4 centerView = mul(_MatrixMV0, position4);
+    if (centerView.z <= 0.0)
+    {
+        float pixels = ProjectedFootprintPixels(centerView, covA, covB, _MatrixMV0, _MatrixP0);
+        overlaps = pixels > 0.0;
+        maxPixels = max(maxPixels, pixels);
+    }
+    if (_EyeCount > 1)
+    {
+        centerView = mul(_MatrixMV1, position4);
+        if (centerView.z <= 0.0)
+        {
+            float pixels = ProjectedFootprintPixels(centerView, covA, covB, _MatrixMV1, _MatrixP1);
+            bool eyeOverlaps = pixels > 0.0;
+            overlaps = overlaps || eyeOverlaps;
+            maxPixels = max(maxPixels, pixels);
+        }
+    }
+
+    depth = mul(_MatrixMVDepth, position4).z;
+    return overlaps && maxPixels * 0.5 >= _MinProjectedRadiusPixels &&
+           opacity * maxPixels * maxPixels >= _MinContribution;
+}
+
+[numthreads(1, 1, 1)]
+void ClearLodTraversal(uint3 id : SV_DispatchThreadID)
+{
+    _VisibleCountBuffer.Store(0, 0);
+    _LodTraversalCounts.Store(0, 1);
+    _LodTraversalCounts.Store(4, 0);
+    _LodTraversalCounts.Store(8, 0);
+    _LodTraversalCounts.Store(12, 0);
+    _LodNodeQueueInput[0] = _LodRootNode;
+}
+
+[numthreads(1, 1, 1)]
+void ClearLodNext(uint3 id : SV_DispatchThreadID)
+{
+    _LodTraversalCounts.Store(_LodNextCountOffset, 0);
+}
+
+[numthreads(GROUP_SIZE, 1, 1)]
+void TraverseLod(uint3 id : SV_DispatchThreadID)
+{
+    uint currentCount = _LodTraversalCounts.Load(_LodCurrentCountOffset);
+    if (id.x >= currentCount)
+        return;
+
+    uint nodeIndex = _LodNodeQueueInput[id.x];
+    LodNode node = _LodNodesBuffer[nodeIndex];
+    uint classification = ClassifyNode(node.bounds);
+    if (classification == 0)
+        return;
+
+    bool leaf = node.childCount == 0;
+    bool selectRepresentatives = !leaf && node.representativeCount > 0 &&
+                                 ProjectedNodeError(node) <= _LodErrorPixels;
+    if (leaf || selectRepresentatives)
+    {
+        uint selectedIndex;
+        _LodTraversalCounts.InterlockedAdd(8, 1, selectedIndex);
+        uint flags = classification == 2 ? NODE_FULLY_INSIDE : 0;
+        if (selectRepresentatives)
+            flags |= NODE_LOD_REPRESENTATIVES;
+        _LodSelectedNodes[selectedIndex] = nodeIndex | flags;
+        return;
+    }
+
+    uint outputBase;
+    _LodTraversalCounts.InterlockedAdd(_LodNextCountOffset, node.childCount, outputBase);
+    for (uint child = 0; child < node.childCount; ++child)
+        _LodNodeQueueOutput[outputBase + child] = node.firstChild + child;
+}
+
+[numthreads(1, 1, 1)]
+void BuildLodExpandArgs(uint3 id : SV_DispatchThreadID)
+{
+    uint selectedCount = _LodTraversalCounts.Load(8);
+    _LodDispatchArgs.Store(0, max(1u, selectedCount));
+    _LodDispatchArgs.Store(4, 1);
+    _LodDispatchArgs.Store(8, 1);
+}
+
+groupshared uint g_lodScan[GROUP_SIZE];
+groupshared uint g_lodGroupCount;
+groupshared uint g_lodOutputBase;
+
+void AppendLodGroup(bool visible, uint splatId, float depth, uint threadIndex)
+{
+    g_lodScan[threadIndex] = visible ? 1 : 0;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint scanStride = 1; scanStride < GROUP_SIZE; scanStride <<= 1)
+    {
+        uint index = (threadIndex + 1) * scanStride * 2 - 1;
+        if (index < GROUP_SIZE)
+            g_lodScan[index] += g_lodScan[index - scanStride];
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (threadIndex == GROUP_SIZE - 1)
+    {
+        g_lodGroupCount = g_lodScan[threadIndex];
+        g_lodScan[threadIndex] = 0;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint downStride = GROUP_SIZE >> 1; downStride > 0; downStride >>= 1)
+    {
+        uint index = (threadIndex + 1) * downStride * 2 - 1;
+        if (index < GROUP_SIZE)
+        {
+            uint value = g_lodScan[index - downStride];
+            g_lodScan[index - downStride] = g_lodScan[index];
+            g_lodScan[index] += value;
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (threadIndex == 0)
+        _VisibleCountBuffer.InterlockedAdd(0, g_lodGroupCount, g_lodOutputBase);
+    GroupMemoryBarrierWithGroupSync();
+    if (visible)
+    {
+        uint outputIndex = g_lodOutputBase + g_lodScan[threadIndex];
+        _OrderBuffer[outputIndex] = splatId;
+        _DepthBuffer[outputIndex] = depth;
+    }
+}
+
+[numthreads(GROUP_SIZE, 1, 1)]
+void ExpandLodSelectionUncompressed(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
+{
+    LodNode node = _LodNodesBuffer[0];
+    bool representatives = false;
+    uint dataIndex = 0;
+    uint selectedCount = _LodTraversalCounts.Load(8);
+    bool candidate = groupId.x < selectedCount;
+    if (candidate)
+    {
+        uint encodedNode = _LodSelectedNodes[groupId.x];
+        node = _LodNodesBuffer[encodedNode & NODE_INDEX_MASK];
+        representatives = (encodedNode & NODE_LOD_REPRESENTATIVES) != 0;
+        uint count = representatives ? node.representativeCount : node.splatCount;
+        dataIndex = (representatives ? node.firstRepresentative : node.firstSplat) + threadId.x;
+        candidate = threadId.x < count;
+    }
+    bool visible = false;
+    uint splatId = 0;
+    float depth = 0;
+    if (candidate)
+    {
+        if (representatives)
+        {
+            LodSplat splat = _LodSplatsBuffer[dataIndex];
+            visible = DetailedFootprintVisible(splat.positionOpacity.xyz, splat.scaleContribution.xyz,
+                splat.rotation, splat.positionOpacity.w, depth);
+            splatId = _UploadedCount + dataIndex;
+        }
+        else if (_UseActiveMask == 0 || _ActiveMaskBuffer[dataIndex] != 0)
+        {
+            visible = DetailedFootprintVisible(_PositionBuffer[dataIndex], _ScaleBuffer[dataIndex],
+                _RotationBuffer[dataIndex], 1.0, depth);
+            splatId = dataIndex;
+        }
+    }
+    AppendLodGroup(visible, splatId, depth, threadId.x);
+}
+
+[numthreads(GROUP_SIZE, 1, 1)]
+void ExpandLodSelectionSpark(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
+{
+    LodNode node = _LodNodesBuffer[0];
+    bool representatives = false;
+    uint dataIndex = 0;
+    uint selectedCount = _LodTraversalCounts.Load(8);
+    bool candidate = groupId.x < selectedCount;
+    if (candidate)
+    {
+        uint encodedNode = _LodSelectedNodes[groupId.x];
+        node = _LodNodesBuffer[encodedNode & NODE_INDEX_MASK];
+        representatives = (encodedNode & NODE_LOD_REPRESENTATIVES) != 0;
+        uint count = representatives ? node.representativeCount : node.splatCount;
+        dataIndex = (representatives ? node.firstRepresentative : node.firstSplat) + threadId.x;
+        candidate = threadId.x < count;
+    }
+    bool visible = false;
+    uint splatId = 0;
+    float depth = 0;
+    if (candidate)
+    {
+        if (representatives)
+        {
+            LodSplat splat = _LodSplatsBuffer[dataIndex];
+            visible = DetailedFootprintVisible(splat.positionOpacity.xyz, splat.scaleContribution.xyz,
+                splat.rotation, splat.positionOpacity.w, depth);
+            splatId = _UploadedCount + dataIndex;
+        }
+        else if (_UseActiveMask == 0 || _ActiveMaskBuffer[dataIndex] != 0)
+        {
+            uint4 word = _PackedSplatsBuffer[dataIndex];
+            float3 position = float3(f16tof32(word.y & 0xFFFFu), f16tof32(word.y >> 16u),
+                f16tof32(word.z & 0xFFFFu));
+            uint3 encodedScale = uint3(word.w & 0xFFu, (word.w >> 8u) & 0xFFu,
+                (word.w >> 16u) & 0xFFu);
+            float scaleStep = 21.0 / 254.0;
+            float3 scale = float3(
+                encodedScale.x == 0 ? 0.0 : exp(-12.0 + float(encodedScale.x - 1u) * scaleStep),
+                encodedScale.y == 0 ? 0.0 : exp(-12.0 + float(encodedScale.y - 1u) * scaleStep),
+                encodedScale.z == 0 ? 0.0 : exp(-12.0 + float(encodedScale.z - 1u) * scaleStep));
+            uint encodedRotation = ((word.z >> 16u) & 0xFFFFu) | ((word.w >> 8u) & 0xFF0000u);
+            float opacity = float((word.x >> 24u) & 0xFFu) / 255.0;
+            visible = DetailedFootprintVisible(position, scale,
+                DecodeQuatOctXyz88R8(encodedRotation), opacity, depth);
+            splatId = dataIndex;
+        }
+    }
+    AppendLodGroup(visible, splatId, depth, threadId.x);
 }
 
 [numthreads(1, 1, 1)]

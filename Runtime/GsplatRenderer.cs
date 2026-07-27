@@ -92,6 +92,7 @@ namespace Gsplat
         internal GraphicsBuffer VisibleCountBuffer => m_renderer?.VisibleCountBuffer;
         internal GraphicsBuffer HierarchyCountsBuffer => m_renderer?.HierarchyCountsBuffer;
         internal bool HierarchicalCullingActive => m_renderer is { HierarchicalCullingActive: true };
+        internal bool LodCullingActive => m_renderer is { LodCullingActive: true };
         internal GraphicsBuffer SortDispatchArgs => m_renderer?.SortDispatchArgs;
         public GsplatSortMode SortMode = GsplatSortMode.Always;
         [HideInInspector] public uint SortRefreshRate = 1;
