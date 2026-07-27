@@ -149,7 +149,7 @@ namespace Gsplat.Tests
                     asset.Positions[i] = new Vector3(i % 17, (i / 17) % 17, i / 289.0f);
                     asset.Colors[i] = new Vector4(0.1f, -0.2f, 0.3f, 0.5f);
                     asset.Scales[i] = new Vector3(0.02f, 0.03f, 0.04f);
-                    asset.Rotations[i] = new Vector4(0, 0, 0, 1);
+                    asset.Rotations[i] = new Vector4(1, 0, 0, 0);
                     for (int coefficient = 0; coefficient < 3; ++coefficient)
                         asset.SHs[i * 3 + coefficient] = Vector3.one * (coefficient + 1);
                 }
@@ -171,6 +171,38 @@ namespace Gsplat.Tests
                     Assert.That(representative.ScaleContribution.z, Is.GreaterThan(0));
                     Assert.That(representative.Rotation.magnitude, Is.EqualTo(1).Within(1e-4f));
                 }
+            }
+            finally
+            {
+                Object.DestroyImmediate(asset);
+            }
+        }
+
+        [Test]
+        public void LodRepresentativeRotationsUseShaderWxyzLayout()
+        {
+            var asset = ScriptableObject.CreateInstance<GsplatAssetUncompressed>();
+            try
+            {
+                const int count = 257;
+                asset.SplatCount = count;
+                asset.SHBands = 0;
+                asset.SpatialChunkSize = 128;
+                asset.Allocate();
+                for (int i = 0; i < count; ++i)
+                {
+                    asset.Positions[i] = Vector3.zero;
+                    asset.Colors[i] = new Vector4(0, 0, 0, 0.5f);
+                    asset.Scales[i] = Vector3.one * 0.02f;
+                    asset.Rotations[i] = new Vector4(1, 0, 0, 0);
+                }
+
+                asset.BuildSpatialHierarchy();
+
+                Assert.That(asset.SpatialLodSplats, Is.Not.Empty);
+                foreach (var representative in asset.SpatialLodSplats)
+                    Assert.That(Vector4.Distance(representative.Rotation, new Vector4(1, 0, 0, 0)),
+                        Is.LessThan(1e-5f));
             }
             finally
             {
@@ -265,6 +297,36 @@ namespace Gsplat.Tests
             {
                 resources.Dispose();
             }
+        }
+
+        [Test]
+        public void ProjectionDispatchSpansMultipleDimensionsPastD3D12Limit()
+        {
+            var shader = AssetDatabase.LoadAssetAtPath<ComputeShader>(
+                "Packages/rui.couto.gsplat/Runtime/Shaders/GsplatFrustumCull.compute");
+            Assert.That(shader, Is.Not.Null);
+
+            using var visibleCountBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Raw, 1, sizeof(uint));
+            using var projectionArgsBuffer =
+                new GraphicsBuffer(GraphicsBuffer.Target.IndirectArguments, 1, sizeof(uint) * 3);
+            using var sortArgsBuffer =
+                new GraphicsBuffer(GraphicsBuffer.Target.IndirectArguments, 1, sizeof(uint) * 3);
+            using var drawArgsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.IndirectArguments, 1,
+                GraphicsBuffer.IndirectDrawIndexedArgs.size);
+
+            visibleCountBuffer.SetData(new[] { 5_436_622u });
+            int kernel = shader.FindKernel("BuildProjectionArgs");
+            shader.SetInt("_SplatInstanceSize", 1);
+            shader.SetInt("_IndexCountPerInstance", 6);
+            shader.SetBuffer(kernel, "_VisibleCountBuffer", visibleCountBuffer);
+            shader.SetBuffer(kernel, "_ProjectionDispatchArgs", projectionArgsBuffer);
+            shader.SetBuffer(kernel, "_SortDispatchArgs", sortArgsBuffer);
+            shader.SetBuffer(kernel, "_DrawArgs", drawArgsBuffer);
+            shader.Dispatch(kernel, 1, 1, 1);
+
+            var dispatchArgs = new uint[3];
+            projectionArgsBuffer.GetData(dispatchArgs);
+            Assert.That(dispatchArgs, Is.EqualTo(new[] { 65_535u, 2u, 1u }));
         }
 
         [Test]

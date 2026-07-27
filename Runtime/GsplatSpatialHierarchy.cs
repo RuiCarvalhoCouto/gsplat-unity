@@ -533,7 +533,8 @@ namespace Gsplat
                     Mathf.Sqrt(Mathf.Max((float)eigenvalues.y, k_MinScale * k_MinScale)),
                     Mathf.Sqrt(Mathf.Max((float)eigenvalues.z, k_MinScale * k_MinScale)));
                 Quaternion quaternion = eigenvectors.rotation.normalized;
-                rotation = new Vector4(quaternion.x, quaternion.y, quaternion.z, quaternion.w);
+                // Runtime shaders decode rotations as wxyz, matching imported splat data.
+                rotation = new Vector4(quaternion.w, quaternion.x, quaternion.y, quaternion.z);
             }
         }
 

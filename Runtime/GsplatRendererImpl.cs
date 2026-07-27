@@ -86,6 +86,7 @@ namespace Gsplat
         public bool HierarchicalCullingActive => FrustumCullingActive &&
                                                  GsplatResource is { HasSpatialHierarchy: true };
         public bool LodCullingActive { get; private set; }
+        internal bool ProjectedRenderingActive { get; private set; }
         public GraphicsBuffer HierarchyCountsBuffer => m_hierarchyCountsBuffer;
 
         GraphicsBuffer m_candidateOrderBuffer;
@@ -178,6 +179,7 @@ namespace Gsplat
         static readonly int k_minProjectedRadiusPixels = Shader.PropertyToID("_MinProjectedRadiusPixels");
         static readonly int k_minContribution = Shader.PropertyToID("_MinContribution");
         static readonly int k_peripheralLodBias = Shader.PropertyToID("_PeripheralLodBias");
+        static readonly int k_useProjectedRendering = Shader.PropertyToID("_UseProjectedRendering");
         static readonly int k_originalSplatCount = Shader.PropertyToID("_OriginalSplatCount");
         static readonly int k_projectedSplatsBuffer = Shader.PropertyToID("_ProjectedSplatsBuffer");
         static readonly int k_lodSourceIds = Shader.PropertyToID("_LodSourceIds");
@@ -283,7 +285,10 @@ namespace Gsplat
                 EnsureCullingResources();
             FrustumCullingActive = active;
             if (!active)
+            {
                 LodCullingActive = false;
+                ProjectedRenderingActive = false;
+            }
             SorterResource.Initialized = false;
             if (m_candidateOrderResource != null)
                 m_candidateOrderResource.Initialized = false;
@@ -353,11 +358,11 @@ namespace Gsplat
         }
 
         public void Cull(CommandBuffer cmd, Camera camera, Transform transform) =>
-            Cull(cmd, new GsplatCameraInfo(camera), transform, 0, m_gsplatAsset.SHBands, 0, 0);
+            Cull(cmd, new GsplatCameraInfo(camera), transform, 0, m_gsplatAsset.SHBands, 0, 0, false);
 
         internal void Cull(CommandBuffer cmd, in GsplatCameraInfo cameraInfo, Transform transform,
             float chunkCullingAggressiveness, int shDegree, float maxContributionPruning,
-            float peripheralLodBias)
+            float peripheralLodBias, bool useProjectedRendering)
         {
             var cs = m_gsplatAsset.GsplatMaterial.FrustumCullShader;
             Matrix4x4 matrixM = transform.localToWorldMatrix;
@@ -373,25 +378,33 @@ namespace Gsplat
             cmd.SetComputeMatrixParam(cs, k_matrixMvDepth, matrixMvDepth);
             cmd.SetComputeMatrixParam(cs, k_matrixP0, cameraInfo.ProjectionMatrix0);
             cmd.SetComputeMatrixParam(cs, k_matrixP1, cameraInfo.ProjectionMatrix1);
-            SetProjectionMatrices(cmd, cs, cameraInfo, matrixM);
-
             LodCullingActive = CanUseLod(cameraInfo, matrixM);
+            ProjectedRenderingActive = LodCullingActive && useProjectedRendering;
             if (LodCullingActive)
+            {
+                EnsureLodResources();
+                if (ProjectedRenderingActive)
+                {
+                    EnsureProjectionResources();
+                    SetProjectionMatrices(cmd, cs, cameraInfo, matrixM);
+                }
                 CullLod(cmd, cs, Mathf.Clamp01(chunkCullingAggressiveness), shDegree,
-                    Mathf.Max(0, maxContributionPruning), Mathf.Clamp(peripheralLodBias, 0, 3));
+                    Mathf.Max(0, maxContributionPruning), Mathf.Clamp(peripheralLodBias, 0, 3),
+                    ProjectedRenderingActive);
+            }
             else if (HierarchicalCullingActive)
                 CullHierarchy(cmd, cs, Mathf.Clamp01(chunkCullingAggressiveness));
             else
                 CullFlat(cmd, cs);
 
-            if (!LodCullingActive)
+            if (!ProjectedRenderingActive)
                 BuildRenderArgs(cmd, cs);
         }
 
         internal void Project(CommandBuffer cmd, in GsplatCameraInfo cameraInfo, Transform transform,
             int shDegree)
         {
-            if (!LodCullingActive || !cameraInfo.SupportsHybridLod)
+            if (!Application.isPlaying || !ProjectedRenderingActive || !cameraInfo.SupportsHybridLod)
                 return;
             var cs = m_gsplatAsset.GsplatMaterial.FrustumCullShader;
             SetProjectionMatrices(cmd, cs, cameraInfo, transform.localToWorldMatrix);
@@ -412,7 +425,12 @@ namespace Gsplat
 
         bool CanUseLod(in GsplatCameraInfo cameraInfo, Matrix4x4 matrix)
         {
-            bool matrixStable = m_hasLodMatrix && m_previousLodMatrix == matrix;
+            if (!Application.isPlaying)
+            {
+                m_hasLodMatrix = false;
+                return false;
+            }
+            bool matrixStable = !m_hasLodMatrix || m_previousLodMatrix == matrix;
             m_previousLodMatrix = matrix;
             m_hasLodMatrix = true;
             return cameraInfo.SupportsHybridLod && !GsplatSorter.Instance.GlobalRenderEnabled &&
@@ -498,7 +516,7 @@ namespace Gsplat
         }
 
         void CullLod(CommandBuffer cmd, ComputeShader cs, float aggressiveness, int shDegree,
-            float maxContributionPruning, float peripheralLodBias)
+            float maxContributionPruning, float peripheralLodBias, bool useProjectedRendering)
         {
             var resource = GsplatResource;
             GraphicsBuffer activeMask = m_useActiveMask ? m_activeMaskBuffer : m_dummyActiveMaskBuffer;
@@ -511,6 +529,7 @@ namespace Gsplat
             cmd.SetComputeFloatParam(cs, k_minContribution,
                 maxContributionPruning * GsplatLodBudget.Pressure);
             cmd.SetComputeFloatParam(cs, k_peripheralLodBias, peripheralLodBias);
+            cmd.SetComputeIntParam(cs, k_useProjectedRendering, useProjectedRendering ? 1 : 0);
 
             cmd.SetComputeBufferParam(cs, m_kernelLodClear, k_visibleCountBuffer, VisibleCountBuffer);
             cmd.SetComputeBufferParam(cs, m_kernelLodClear, k_lodTraversalCounts, m_lodTraversalCounts);
@@ -563,7 +582,8 @@ namespace Gsplat
                 cmd.SetComputeBufferParam(cs, m_kernelLodExpand, k_colorBuffer, uncompressed.ColorBuffer);
             cmd.DispatchCompute(cs, m_kernelLodExpand, m_lodDispatchArgs, 0);
 
-            ProjectVisibleSplats(cmd, cs, resource, shDegree);
+            if (useProjectedRendering)
+                ProjectVisibleSplats(cmd, cs, resource, shDegree);
         }
 
         void ProjectVisibleSplats(CommandBuffer cmd, ComputeShader cs, GsplatResource resource, int shDegree)
@@ -697,7 +717,6 @@ namespace Gsplat
             BoundsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 6, sizeof(uint));
             VisibleCountBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Raw, 1, sizeof(uint));
             VisibleCountBuffer.SetData(new uint[1]);
-            CreateProjectedSplatBuffer(1);
         }
 
         void CreatePropertyBlock()
@@ -705,7 +724,6 @@ namespace Gsplat
             m_propertyBlock ??= new MaterialPropertyBlock();
             m_propertyBlock.SetBuffer(k_orderBuffer, OrderBuffer);
             m_propertyBlock.SetBuffer(k_visibleCountBuffer, VisibleCountBuffer);
-            m_propertyBlock.SetBuffer(k_projectedSplatsBuffer, m_projectedSplatsBuffer);
         }
 
         void EnsureCullingResources()
@@ -747,26 +765,36 @@ namespace Gsplat
             m_hierarchyCountsBuffer.SetData(new uint[4]);
             m_hierarchyDispatchArgs = new GraphicsBuffer(GraphicsBuffer.Target.IndirectArguments, 9, sizeof(uint));
             m_hierarchyDispatchArgs.SetData(new uint[9]);
-            if (GsplatResource.SpatialLodSplatCount > 0)
-            {
-                int nodeCount = GsplatResource.SpatialLodNodeCount;
-                m_lodNodeQueueA = new GraphicsBuffer(GraphicsBuffer.Target.Structured, nodeCount, sizeof(uint));
-                m_lodNodeQueueB = new GraphicsBuffer(GraphicsBuffer.Target.Structured, nodeCount, sizeof(uint));
-                m_lodSelectedNodes = new GraphicsBuffer(GraphicsBuffer.Target.Structured,
-                    GsplatResource.SpatialLeafCount, sizeof(uint));
-                m_lodTraversalCounts = new GraphicsBuffer(GraphicsBuffer.Target.Raw, 4, sizeof(uint));
-                m_lodTraversalCounts.SetData(new uint[4]);
-                m_lodDispatchArgs = new GraphicsBuffer(GraphicsBuffer.Target.IndirectArguments, 3, sizeof(uint));
-                m_lodDispatchArgs.SetData(new uint[3]);
-                m_lodSourceIds =
-                    new GraphicsBuffer(GraphicsBuffer.Target.Structured, (int)SplatCount, sizeof(uint));
-                m_projectionDispatchArgs =
-                    new GraphicsBuffer(GraphicsBuffer.Target.IndirectArguments, 3, sizeof(uint));
-                m_projectionDispatchArgs.SetData(new uint[3]);
-                CreateProjectedSplatBuffer(checked((int)((ulong)SplatCount * 2)));
-            }
             m_dummyActiveMaskBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1, sizeof(uint));
             m_dummyActiveMaskBuffer.SetData(new uint[1]);
+        }
+
+        void EnsureLodResources()
+        {
+            if (m_lodTraversalCounts != null)
+                return;
+
+            int nodeCount = GsplatResource.SpatialLodNodeCount;
+            m_lodNodeQueueA = new GraphicsBuffer(GraphicsBuffer.Target.Structured, nodeCount, sizeof(uint));
+            m_lodNodeQueueB = new GraphicsBuffer(GraphicsBuffer.Target.Structured, nodeCount, sizeof(uint));
+            m_lodSelectedNodes = new GraphicsBuffer(GraphicsBuffer.Target.Structured,
+                GsplatResource.SpatialLeafCount, sizeof(uint));
+            m_lodTraversalCounts = new GraphicsBuffer(GraphicsBuffer.Target.Raw, 4, sizeof(uint));
+            m_lodTraversalCounts.SetData(new uint[4]);
+            m_lodDispatchArgs = new GraphicsBuffer(GraphicsBuffer.Target.IndirectArguments, 3, sizeof(uint));
+            m_lodDispatchArgs.SetData(new uint[3]);
+            m_lodSourceIds = new GraphicsBuffer(GraphicsBuffer.Target.Structured, (int)SplatCount, sizeof(uint));
+        }
+
+        void EnsureProjectionResources()
+        {
+            if (m_projectionDispatchArgs != null)
+                return;
+
+            m_projectionDispatchArgs =
+                new GraphicsBuffer(GraphicsBuffer.Target.IndirectArguments, 3, sizeof(uint));
+            m_projectionDispatchArgs.SetData(new uint[3]);
+            CreateProjectedSplatBuffer(checked((int)((ulong)SplatCount * 2)));
         }
 
         void EnsureActiveMaskResources()
@@ -840,8 +868,8 @@ namespace Gsplat
             m_lodSourceIds = null;
             m_projectionDispatchArgs?.Dispose();
             m_projectionDispatchArgs = null;
-            if (m_projectedSplatsBuffer != null && m_projectedSplatsBuffer.count > 1)
-                CreateProjectedSplatBuffer(1);
+            m_projectedSplatsBuffer?.Dispose();
+            m_projectedSplatsBuffer = null;
             SortDispatchArgs?.Dispose();
             SortDispatchArgs = null;
             DrawArgs?.Dispose();
@@ -849,6 +877,7 @@ namespace Gsplat
             m_useActiveMask = false;
             m_orderInitializationMode = 0;
             LodCullingActive = false;
+            ProjectedRenderingActive = false;
             m_hasLodMatrix = false;
             m_hasRenderMatrix = false;
         }
@@ -886,6 +915,16 @@ namespace Gsplat
         {
             m_framesBeforeRecomputeSort = 0;
             m_sortsBeforeRecomputeCutouts = 0;
+        }
+
+        internal void DisableLodCulling()
+        {
+            if (!LodCullingActive)
+                return;
+            LodCullingActive = false;
+            ProjectedRenderingActive = false;
+            m_hasLodMatrix = false;
+            ForceRefresh();
         }
 
         public void NotifyTransform(Transform transform)

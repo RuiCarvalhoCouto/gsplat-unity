@@ -9,14 +9,20 @@ namespace Gsplat.Editor
     [CustomEditor(typeof(GsplatRenderer))]
     public class GsplatRendererEditor : UnityEditor.Editor
     {
+        static void DrawHeader(string label)
+        {
+            EditorGUILayout.Space();
+            EditorGUILayout.LabelField(label, EditorStyles.boldLabel);
+        }
+
         public override void OnInspectorGUI()
         {
             serializedObject.Update();
 
-            var rendererTargetEarly = (GsplatRenderer)target;
+            var renderer = (GsplatRenderer)target;
             if (GsplatSettings.Instance.EnableGlobalSort
-                && rendererTargetEarly.GsplatAsset
-                && rendererTargetEarly.GsplatAsset.Compression == CompressionMode.Uncompressed)
+                && renderer.GsplatAsset
+                && renderer.GsplatAsset.Compression == CompressionMode.Uncompressed)
             {
                 EditorGUILayout.HelpBox(
                     "Global sort is enabled, but this renderer uses an uncompressed asset. " +
@@ -26,21 +32,17 @@ namespace Gsplat.Editor
                     MessageType.Warning);
             }
 
-            DrawPropertiesExcluding(serializedObject, "m_Script",
-                nameof(GsplatRenderer.SHDegree),
-                nameof(GsplatRenderer.AsyncUpload),
-                nameof(GsplatRenderer.RenderBeforeUploadComplete),
-                nameof(GsplatRenderer.Brightness),
-                nameof(GsplatRenderer.SortMode)
-            );
+            DrawHeader("Asset");
+            EditorGUILayout.PropertyField(
+                serializedObject.FindProperty(nameof(GsplatRenderer.GsplatAsset)));
 
             // SH degree: slider max equals the bound asset's SHBands (so a degree-3 asset
             // shows 0–3, a degree-4 SPZ shows 0–4). Without an asset, fall back to 3.
-            var rendererTarget = (GsplatRenderer)target;
-            int maxShBands = rendererTarget.GsplatAsset ? rendererTarget.GsplatAsset.SHBands : 3;
+            DrawHeader("Appearance");
+            int maxShBands = renderer.GsplatAsset ? renderer.GsplatAsset.SHBands : 3;
             var shDegreeProp = serializedObject.FindProperty(nameof(GsplatRenderer.SHDegree));
             shDegreeProp.intValue = EditorGUILayout.IntSlider(
-                "SH Degree", shDegreeProp.intValue, 0, maxShBands);
+                new GUIContent("SH Degree", shDegreeProp.tooltip), shDegreeProp.intValue, 0, maxShBands);
 
             var brightnessProp = serializedObject.FindProperty(nameof(GsplatRenderer.Brightness));
             float brightness = brightnessProp.floatValue;
@@ -55,9 +57,55 @@ namespace Gsplat.Editor
                 "Brightness", UnityEngine.Mathf.Exp(logVal)
             );
             brightnessProp.floatValue = brightness;
-            
+            EditorGUILayout.PropertyField(
+                serializedObject.FindProperty(nameof(GsplatRenderer.SplatDownscaleFactor)));
+            EditorGUILayout.PropertyField(
+                serializedObject.FindProperty(nameof(GsplatRenderer.GammaToLinear)));
+
+            var renderOrderProp = serializedObject.FindProperty(nameof(GsplatRenderer.RenderOrder));
+            if (GsplatSettings.Instance.MaxRenderOrder > 1)
+                renderOrderProp.intValue = EditorGUILayout.IntSlider(
+                    new GUIContent("Render Order",
+                        "Controls transparent render ordering between Gaussian renderers."),
+                    renderOrderProp.intValue, 0, (int)GsplatSettings.Instance.MaxRenderOrder - 1);
+
+            DrawHeader("Visibility and LOD");
+            var cullingProp =
+                serializedObject.FindProperty(nameof(GsplatRenderer.EnableFrustumCulling));
+            EditorGUILayout.PropertyField(cullingProp);
+            using (new EditorGUI.DisabledScope(!cullingProp.boolValue))
+            {
+                EditorGUI.indentLevel++;
+                EditorGUILayout.PropertyField(
+                    serializedObject.FindProperty(nameof(GsplatRenderer.ChunkCullingAggressiveness)));
+                EditorGUILayout.PropertyField(
+                    serializedObject.FindProperty(nameof(GsplatRenderer.MaxContributionPruning)));
+                EditorGUILayout.PropertyField(
+                    serializedObject.FindProperty(nameof(GsplatRenderer.PeripheralLodBias)));
+
+                var adaptiveProp =
+                    serializedObject.FindProperty(nameof(GsplatRenderer.EnableAdaptiveResolution));
+                EditorGUILayout.PropertyField(adaptiveProp);
+                using (new EditorGUI.DisabledScope(!adaptiveProp.boolValue))
+                    EditorGUILayout.PropertyField(
+                        serializedObject.FindProperty(nameof(GsplatRenderer.MinimumResolutionScale)));
+                EditorGUI.indentLevel--;
+            }
+
+            if (serializedObject.FindProperty(nameof(GsplatRenderer.EnableAdaptiveResolution)).boolValue)
+            {
+                EditorGUILayout.HelpBox(
+                    "Adaptive resolution runs in Play Mode and requires Unity 6 URP Render Graph, " +
+                    "frustum culling, imported LOD data, a stable renderer transform, no active " +
+                    "cutouts, and per-renderer sorting. Unsupported cases use the existing render path.",
+                    MessageType.Info);
+            }
+
+            DrawHeader("Sorting");
             EditorGUILayout.PropertyField(serializedObject.FindProperty(nameof(GsplatRenderer.SortMode)));
-            var renderer = (GsplatRenderer)target;
+            EditorGUILayout.PropertyField(
+                serializedObject.FindProperty(nameof(GsplatRenderer.UseExactDepthSort)));
+
             // Sort Refresh Rate slider only if on correct mode
             if (renderer.SortMode == GsplatRenderer.GsplatSortMode.SortEveryNFrames ||
                 renderer.SortMode == GsplatRenderer.GsplatSortMode.CutoutsEveryNSorts)
@@ -82,15 +130,8 @@ namespace Gsplat.Editor
                     renderer.ForceRefresh();
                 }
             }
-            
-            var renderOrderProp = serializedObject.FindProperty(nameof(GsplatRenderer.RenderOrder));
-            uint renderOrder = (uint)renderOrderProp.intValue;
 
-            // RenderOrder slider depend on the MaxRenderOrder setting
-            if (GsplatSettings.Instance.MaxRenderOrder > 1)
-                renderOrderProp.intValue = EditorGUILayout.IntSlider(new GUIContent("Render Order"),
-                    (int)renderOrder, 0, (int)GsplatSettings.Instance.MaxRenderOrder - 1);
-
+            DrawHeader("Loading");
             EditorGUILayout.PropertyField(serializedObject.FindProperty(nameof(GsplatRenderer.AsyncUpload)));
             if (serializedObject.FindProperty(nameof(GsplatRenderer.AsyncUpload)).boolValue)
             {
@@ -99,6 +140,10 @@ namespace Gsplat.Editor
                     serializedObject.FindProperty(nameof(GsplatRenderer.RenderBeforeUploadComplete)));
                 EditorGUI.indentLevel--;
             }
+
+            DrawHeader("Cutouts");
+            EditorGUILayout.PropertyField(
+                serializedObject.FindProperty(nameof(GsplatRenderer.CutoutsUpdateBounds)));
 
             serializedObject.ApplyModifiedProperties();
         }

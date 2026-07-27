@@ -96,24 +96,6 @@ Shader "Gsplat/Standard"
                 if (!InitSource(v, source))
                     return o;
 
-                if ((source.id & 0x80000000u) != 0)
-                {
-                    uint projectedId = source.id & 0x7fffffffu;
-                    ProjectedSplat projected =
-                        _ProjectedSplatsBuffer[projectedId * 2 + unity_StereoEyeIndex];
-                    if (projected.color.a < 0)
-                        return o;
-                    float clip = min(1.0, sqrt(-log(1.0 / 255.0 / projected.color.a)) / 2.0);
-                    float2 uv = source.cornerUV * clip;
-                    float2 offset = (source.cornerUV.x * projected.axes.xy +
-                                     source.cornerUV.y * projected.axes.zw) * clip;
-                    o.vertex = projected.centerProj +
-                               float4(offset.x, _ProjectionParams.x * offset.y, 0, 0);
-                    o.color = projected.color;
-                    o.uv = uv;
-                    return o;
-                }
-
                 SplatCenter center;
                 SplatCorner corner;
                 float4 color;

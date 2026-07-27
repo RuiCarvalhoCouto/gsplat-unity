@@ -3,6 +3,7 @@
 
 #define GROUP_SIZE 256
 #define PROJECTION_GROUP_SIZE 64
+#define MAX_DISPATCH_GROUPS 65535u
 #define COARSE_LEAF_COUNT 64
 #define NODE_FULLY_INSIDE 0x80000000u
 #define NODE_LOD_REPRESENTATIVES 0x40000000u
@@ -52,6 +53,7 @@ uint _LodRootNode;
 uint _LodCurrentCountOffset;
 uint _LodNextCountOffset;
 uint _RenderEyeCount;
+uint _UseProjectedRendering;
 uint _SHDegree;
 uint _SHCoefficientCount;
 float _ChunkCullingAggressiveness;
@@ -404,11 +406,13 @@ void BuildSplatArgs(uint3 id : SV_DispatchThreadID)
 {
     uint fullCount = _HierarchyCounts.Load(4);
     uint intersectCount = _HierarchyCounts.Load(8);
-    _HierarchyDispatchArgs.Store(12, max(1u, fullCount * _GroupsPerLeaf));
-    _HierarchyDispatchArgs.Store(16, 1);
+    uint fullGroups = max(1u, fullCount * _GroupsPerLeaf);
+    uint intersectGroups = max(1u, intersectCount * _GroupsPerLeaf);
+    _HierarchyDispatchArgs.Store(12, min(fullGroups, MAX_DISPATCH_GROUPS));
+    _HierarchyDispatchArgs.Store(16, (fullGroups + MAX_DISPATCH_GROUPS - 1u) / MAX_DISPATCH_GROUPS);
     _HierarchyDispatchArgs.Store(20, 1);
-    _HierarchyDispatchArgs.Store(24, max(1u, intersectCount * _GroupsPerLeaf));
-    _HierarchyDispatchArgs.Store(28, 1);
+    _HierarchyDispatchArgs.Store(24, min(intersectGroups, MAX_DISPATCH_GROUPS));
+    _HierarchyDispatchArgs.Store(28, (intersectGroups + MAX_DISPATCH_GROUPS - 1u) / MAX_DISPATCH_GROUPS);
     _HierarchyDispatchArgs.Store(32, 1);
 }
 
@@ -416,11 +420,12 @@ uint GetHierarchySplatId(uint3 groupId, uint3 threadId)
 {
     uint result = 0xffffffffu;
     uint leafCount = _HierarchyCounts.Load(_LeafListCountOffset);
-    uint listIndex = groupId.x / _GroupsPerLeaf;
+    uint groupIndex = groupId.x + groupId.y * MAX_DISPATCH_GROUPS;
+    uint listIndex = groupIndex / _GroupsPerLeaf;
     if (listIndex < leafCount)
     {
         uint leafId = _ExactTest != 0 ? _IntersectLeafNodes[listIndex] : _FullLeafNodes[listIndex];
-        uint localIndex = (groupId.x % _GroupsPerLeaf) * GROUP_SIZE + threadId.x;
+        uint localIndex = (groupIndex % _GroupsPerLeaf) * GROUP_SIZE + threadId.x;
         uint splatId = leafId * _SpatialChunkSize + localIndex;
         if (localIndex < _SpatialChunkSize && splatId < _UploadedCount)
             if (_UseActiveMask == 0 || _ActiveMaskBuffer[splatId] != 0)
@@ -582,9 +587,9 @@ void TraverseLod(uint3 id : SV_DispatchThreadID)
 [numthreads(1, 1, 1)]
 void BuildLodExpandArgs(uint3 id : SV_DispatchThreadID)
 {
-    uint selectedCount = _LodTraversalCounts.Load(8);
-    _LodDispatchArgs.Store(0, max(1u, selectedCount));
-    _LodDispatchArgs.Store(4, 1);
+    uint selectedGroups = max(1u, _LodTraversalCounts.Load(8));
+    _LodDispatchArgs.Store(0, min(selectedGroups, MAX_DISPATCH_GROUPS));
+    _LodDispatchArgs.Store(4, (selectedGroups + MAX_DISPATCH_GROUPS - 1u) / MAX_DISPATCH_GROUPS);
     _LodDispatchArgs.Store(8, 1);
 }
 
@@ -633,7 +638,8 @@ void AppendLodGroup(bool visible, uint splatId, float depth, uint threadIndex)
     {
         uint outputIndex = g_lodOutputBase + g_lodScan[threadIndex];
         _LodSourceIds[outputIndex] = splatId;
-        _OrderBuffer[outputIndex] = PROJECTED_SPLAT_ID | outputIndex;
+        _OrderBuffer[outputIndex] =
+            _UseProjectedRendering != 0 ? PROJECTED_SPLAT_ID | outputIndex : splatId;
         _DepthBuffer[outputIndex] = depth;
     }
 }
@@ -645,10 +651,11 @@ void ExpandLodSelectionUncompressed(uint3 groupId : SV_GroupID, uint3 threadId :
     bool representatives = false;
     uint dataIndex = 0;
     uint selectedCount = _LodTraversalCounts.Load(8);
-    bool candidate = groupId.x < selectedCount;
+    uint selectedIndex = groupId.x + groupId.y * MAX_DISPATCH_GROUPS;
+    bool candidate = selectedIndex < selectedCount;
     if (candidate)
     {
-        uint encodedNode = _LodSelectedNodes[groupId.x];
+        uint encodedNode = _LodSelectedNodes[selectedIndex];
         node = _LodNodesBuffer[encodedNode & NODE_INDEX_MASK];
         representatives = (encodedNode & NODE_LOD_REPRESENTATIVES) != 0;
         uint count = representatives ? node.representativeCount : node.splatCount;
@@ -684,10 +691,11 @@ void ExpandLodSelectionSpark(uint3 groupId : SV_GroupID, uint3 threadId : SV_Gro
     bool representatives = false;
     uint dataIndex = 0;
     uint selectedCount = _LodTraversalCounts.Load(8);
-    bool candidate = groupId.x < selectedCount;
+    uint selectedIndex = groupId.x + groupId.y * MAX_DISPATCH_GROUPS;
+    bool candidate = selectedIndex < selectedCount;
     if (candidate)
     {
-        uint encodedNode = _LodSelectedNodes[groupId.x];
+        uint encodedNode = _LodSelectedNodes[selectedIndex];
         node = _LodNodesBuffer[encodedNode & NODE_INDEX_MASK];
         representatives = (encodedNode & NODE_LOD_REPRESENTATIVES) != 0;
         uint count = representatives ? node.representativeCount : node.splatCount;
@@ -854,7 +862,7 @@ float3 EvaluateProjectionSH(float3 sh[24], float3 dir)
     return result;
 }
 
-ProjectedSplat ProjectSplat(float3 position, float3 scale, float4 rotation, float4 color,
+ProjectedSplat ProjectSplat(float3 position, float3 covA, float3 covB, float4 color,
                             float3 sh[24], float4x4 matrixMV, float4x4 matrixP)
 {
     ProjectedSplat output;
@@ -866,9 +874,6 @@ ProjectedSplat ProjectSplat(float3 position, float3 scale, float4 rotation, floa
     float4 centerProj = mul(matrixP, centerView4);
     bool valid = centerView4.z <= 0.0 && centerProj.w > 0.0 &&
                  centerProj.z >= 0.0 && centerProj.z <= centerProj.w;
-    float3 covA;
-    float3 covB;
-    CalcCovariance(scale, rotation, covA, covB);
     float3x3 covariance = float3x3(
         covA.x, covA.y, covA.z,
         covA.y, covB.x, covB.y,
@@ -938,21 +943,31 @@ void StoreRenderArgs(uint visibleCount)
 void BuildProjectionArgs(uint3 id : SV_DispatchThreadID)
 {
     uint visibleCount = _VisibleCountBuffer.Load(0);
-    _ProjectionDispatchArgs.Store(0,
-        max(1u, (visibleCount + PROJECTION_GROUP_SIZE - 1u) / PROJECTION_GROUP_SIZE));
-    _ProjectionDispatchArgs.Store(4, 1);
+    uint projectionGroups =
+        max(1u, (visibleCount + PROJECTION_GROUP_SIZE - 1u) / PROJECTION_GROUP_SIZE);
+    _ProjectionDispatchArgs.Store(0, min(projectionGroups, MAX_DISPATCH_GROUPS));
+    _ProjectionDispatchArgs.Store(4,
+        (projectionGroups + MAX_DISPATCH_GROUPS - 1u) / MAX_DISPATCH_GROUPS);
     _ProjectionDispatchArgs.Store(8, 1);
     StoreRenderArgs(visibleCount);
+}
+
+uint GetProjectionThreadIndex(uint3 id)
+{
+    return id.x + id.y * MAX_DISPATCH_GROUPS * PROJECTION_GROUP_SIZE;
 }
 
 void StoreProjectedViews(uint slot, float3 position, float3 scale, float4 rotation, float4 color,
                          float3 sh[24])
 {
+    float3 covA;
+    float3 covB;
+    CalcCovariance(scale, rotation, covA, covB);
     _ProjectedSplatsBuffer[slot * 2] =
-        ProjectSplat(position, scale, rotation, color, sh, _RenderMatrixMV0, _RenderMatrixP0);
+        ProjectSplat(position, covA, covB, color, sh, _RenderMatrixMV0, _RenderMatrixP0);
     if (_RenderEyeCount > 1)
         _ProjectedSplatsBuffer[slot * 2 + 1] =
-            ProjectSplat(position, scale, rotation, color, sh, _RenderMatrixMV1, _RenderMatrixP1);
+            ProjectSplat(position, covA, covB, color, sh, _RenderMatrixMV1, _RenderMatrixP1);
     else
         _ProjectedSplatsBuffer[slot * 2 + 1] = _ProjectedSplatsBuffer[slot * 2];
 }
@@ -961,9 +976,10 @@ void StoreProjectedViews(uint slot, float3 position, float3 scale, float4 rotati
 void ProjectVisibleUncompressed(uint3 id : SV_DispatchThreadID)
 {
     uint visibleCount = _VisibleCountBuffer.Load(0);
-    if (id.x >= visibleCount)
+    uint slot = GetProjectionThreadIndex(id);
+    if (slot >= visibleCount)
         return;
-    uint sourceId = _LodSourceIds[id.x];
+    uint sourceId = _LodSourceIds[slot];
     float3 position;
     float3 scale;
     float4 rotation;
@@ -988,16 +1004,17 @@ void ProjectVisibleUncompressed(uint3 id : SV_DispatchThreadID)
         color.rgb = color.rgb * 0.28209479177387814 + 0.5;
         LoadUncompressedProjectionSH(sourceId, sh);
     }
-    StoreProjectedViews(id.x, position, scale, rotation, color, sh);
+    StoreProjectedViews(slot, position, scale, rotation, color, sh);
 }
 
 [numthreads(PROJECTION_GROUP_SIZE, 1, 1)]
 void ProjectVisibleSpark(uint3 id : SV_DispatchThreadID)
 {
     uint visibleCount = _VisibleCountBuffer.Load(0);
-    if (id.x >= visibleCount)
+    uint slot = GetProjectionThreadIndex(id);
+    if (slot >= visibleCount)
         return;
-    uint sourceId = _LodSourceIds[id.x];
+    uint sourceId = _LodSourceIds[slot];
     float3 position;
     float3 scale;
     float4 rotation;
@@ -1031,7 +1048,7 @@ void ProjectVisibleSpark(uint3 id : SV_DispatchThreadID)
             float((word.x >> 24u) & 0xFFu) / 255.0);
         LoadSparkProjectionSH(sourceId, sh);
     }
-    StoreProjectedViews(id.x, position, scale, rotation, color, sh);
+    StoreProjectedViews(slot, position, scale, rotation, color, sh);
 }
 
 [numthreads(1, 1, 1)]

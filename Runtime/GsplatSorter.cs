@@ -321,7 +321,7 @@ namespace Gsplat
                     continue;
                 if (gs.ComputeSortRequired)
                     renderer.Cull(cmd, cameraInfo);
-                else if (renderer.LodCullingActive)
+                else if (renderer.ProjectedRenderingActive)
                     renderer.Project(cmd, cameraInfo);
             }
             cmd.EndSample(k_cullPassName);

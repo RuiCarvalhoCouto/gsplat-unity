@@ -647,8 +647,8 @@ namespace Gsplat
         // ─── Binary import cache ───────────────────────────────────────────────────
 
         const uint CacheMagic = 0x43435347u; // "GSCC" little-endian
-        // v4: added multilevel LOD hierarchy and representative data.
-        const uint CacheFormatVersion = 4u;
+        // v5: stores LOD representative rotations in shader-native wxyz order.
+        const uint CacheFormatVersion = 5u;
 
         /// <summary>
         /// Attempts to populate this asset's packed arrays from a previously saved cache

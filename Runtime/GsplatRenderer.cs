@@ -19,11 +19,14 @@ namespace Gsplat
             CutoutsEveryNSorts,
         }
 
+        [Tooltip("Gaussian splatting asset rendered by this component.")]
         public GsplatAsset GsplatAsset;
 
         // Range is enforced by GsplatRendererEditor based on the bound asset's SHBands.
+        [Tooltip("Maximum spherical harmonics degree used for view-dependent color.")]
         public int SHDegree = 3;
         [HideInInspector] public uint RenderOrder = 0;
+        [Tooltip("Multiplies rendered Gaussian color intensity.")]
         public float Brightness = 1.0f;
 
         [Tooltip(
@@ -31,6 +34,7 @@ namespace Gsplat
         [Range(0, 1)]
         public float SplatDownscaleFactor = 0.0f;
 
+        [Tooltip("Converts stored Gaussian colors from gamma to linear space in the shader.")]
         public bool GammaToLinear;
         [Tooltip("Filters splats whose projected footprint is outside the camera view before sorting and drawing.")]
         public bool EnableFrustumCulling;
@@ -51,10 +55,12 @@ namespace Gsplat
         [Tooltip("Lowest adaptive Gaussian rendering scale.")]
         [Range(0.5f, 1)]
         public float MinimumResolutionScale = 0.67f;
+        [Tooltip("Uploads Gaussian data over multiple frames during Play Mode.")]
         public bool AsyncUpload;
+        [Tooltip("Renders already-uploaded Gaussians before an asynchronous upload finishes.")]
         public bool RenderBeforeUploadComplete = true;
 
-        [Tooltip("Does cutouts update the Gsplat world bounds? (Costly on moving cutouts)")]
+        [Tooltip("Updates world bounds from active cutouts. Costly when cutouts move.")]
         public bool CutoutsUpdateBounds = true;
 
         GsplatAsset m_prevAsset;
@@ -109,13 +115,14 @@ namespace Gsplat
         internal GraphicsBuffer HierarchyCountsBuffer => m_renderer?.HierarchyCountsBuffer;
         internal bool HierarchicalCullingActive => m_renderer is { HierarchicalCullingActive: true };
         internal bool LodCullingActive => m_renderer is { LodCullingActive: true };
+        internal bool ProjectedRenderingActive => m_renderer is { ProjectedRenderingActive: true };
         internal bool ApproximateDepthSort => LodCullingActive && !UseExactDepthSort;
         internal bool AdaptiveResolutionActive
         {
             get
             {
 #if UNITY_6000_0_OR_NEWER && GSPLAT_ENABLE_URP
-                return EnableAdaptiveResolution && LodCullingActive &&
+                return Application.isPlaying && EnableAdaptiveResolution && LodCullingActive &&
                        !GsplatSorter.Instance.GlobalRenderEnabled &&
                        GsplatSettings.Instance.AdaptiveRenderMaterial &&
                        GsplatSettings.Instance.AdaptiveUpscaleMaterial &&
@@ -129,6 +136,7 @@ namespace Gsplat
         internal float AdaptiveResolutionScale =>
             Mathf.Lerp(1.0f, Mathf.Clamp(MinimumResolutionScale, 0.5f, 1.0f), GsplatLodBudget.Pressure);
         internal GraphicsBuffer SortDispatchArgs => m_renderer?.SortDispatchArgs;
+        [Tooltip("Controls how often depth sorting and cutout data refresh.")]
         public GsplatSortMode SortMode = GsplatSortMode.Always;
         [HideInInspector] public uint SortRefreshRate = 1;
         [HideInInspector] public uint CutoutsRefreshRate = 1;
@@ -136,7 +144,7 @@ namespace Gsplat
         public void ComputeDepth(CommandBuffer cmd, Matrix4x4 matrixMv) => m_renderer.ComputeDepth(cmd, matrixMv);
         internal void Cull(CommandBuffer cmd, in GsplatCameraInfo cameraInfo) =>
             m_renderer.Cull(cmd, cameraInfo, transform, ChunkCullingAggressiveness, SHDegree,
-                MaxContributionPruning, PeripheralLodBias);
+                MaxContributionPruning, PeripheralLodBias, AdaptiveResolutionActive);
         internal void Project(CommandBuffer cmd, in GsplatCameraInfo cameraInfo) =>
             m_renderer.Project(cmd, cameraInfo, transform, SHDegree);
         internal void DrawAdaptive(CommandBuffer cmd) => m_renderer.DrawOffscreen(cmd, RenderOrder);
@@ -231,6 +239,11 @@ namespace Gsplat
                 else if (cullingSupported)
                     m_warnedFrustumCullingUnavailable = false;
                 m_renderer.SetFrustumCulling(EnableFrustumCulling && cullingSupported);
+                if (!Application.isPlaying)
+                    m_renderer.DisableLodCulling();
+                bool adaptiveResolutionActive = AdaptiveResolutionActive;
+                if (adaptiveResolutionActive != m_renderer.ProjectedRenderingActive)
+                    m_renderer.ForceRefresh();
                 m_renderer.NotifyTransform(transform);
                 m_renderer.EvaluateRefreshRequired(SortMode, SortRefreshRate - 1, CutoutsRefreshRate - 1,
                     ApproximateDepthSort);
@@ -239,7 +252,7 @@ namespace Gsplat
                 // skip the per-renderer draw — GsplatSorter.DrawAll handles rendering.
                 if (!GsplatSorter.Instance.GlobalRenderEnabled)
                 {
-                    if (AdaptiveResolutionActive)
+                    if (adaptiveResolutionActive)
                         m_renderer.PrepareRender(transform, GammaToLinear, SHDegree, Brightness,
                             1.0f - SplatDownscaleFactor);
                     else

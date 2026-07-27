@@ -10,7 +10,7 @@ using UnityEngine;
 
 namespace Gsplat.Editor
 {
-    [ScriptedImporter(3, new[] { "ply", "spz" })]
+    [ScriptedImporter(4, new[] { "ply", "spz" })]
     public class GsplatImporter : ScriptedImporter
     {
         public CompressionMode Compression = CompressionMode.Spark;
