@@ -55,6 +55,23 @@ Run on at least one pre-6.4 editor and one 6.4+ editor, using both D3D12 and Vul
 - [ ] Async upload renders only uploaded spatial ranges and reaches the same final output as synchronous upload.
 - [ ] Two Spark renderers using global sort merge hierarchy-visible counts and orders correctly.
 
+## Hybrid renderer
+
+Use a static URP renderer with no cutouts for hybrid-path tests. Compare against the exact full-resolution renderer at fixed poses.
+
+- [ ] Reimport generates deterministic multilevel nodes and representatives; a second reimport produces byte-identical optimization data.
+- [ ] Near views descend to original splats; distant regions select representatives; transitions have no holes, NaNs, invalid scales, or stereo mismatch.
+- [ ] Moving renderers, moving cutouts, global sorting, unsupported pipelines/APIs, partial uploads, and legacy assets use the existing fallback path.
+- [ ] Projection prepass matches direct projection for both eyes across perspective, asymmetric, reversed-Z, and rapidly changing camera matrices.
+- [ ] Approximate sorting halves radix passes; `Use Exact Depth Sort` restores four-pass 32-bit sorting and reference ordering.
+- [ ] Reused sort order updates projected data every frame and forces a sort after cumulative camera translation or rotation exceeds its limit.
+- [ ] Contribution pruning `0`, peripheral LOD bias `0`, and adaptive resolution disabled preserve hybrid reference output.
+- [ ] Increasing contribution pruning and peripheral LOD bias reduces selected/drawn work without holes, objectionable popping, or one-eye differences.
+- [ ] Adaptive resolution responds gradually to GPU pressure, never drops below its configured floor, and returns to native scale after pressure clears.
+- [ ] Depth-aware upscale preserves opaque occlusion, transparent composition order, edge coverage, both eyes, and native-resolution non-GS rendering.
+- [ ] Runtime toggles, camera switches, viewport/resolution changes, transform changes, and asset replacement produce no blank or stale frame.
+- [ ] All hybrid GPU buffers remain capacity-safe and stable in size after warm-up; disable, destroy, scene transition, and domain reload release them.
+
 ## Render modes and pipelines
 
 - [ ] URP renders correctly in a pre-6.4 editor and a 6.4+ editor, including the Unity 6 Render Graph path.
@@ -89,6 +106,10 @@ For each Unity-version and graphics-API combination below, capture three paired 
 - [ ] Culling adds no per-frame managed allocation or GPU-to-CPU readback; all-visible overhead and additional VRAM are quantified.
 - [ ] Hierarchy diagnostics show reduced exact-tested splats in selective views and a functioning fully-inside fast path in high-visibility views.
 - [ ] Partially-visible and off-screen cases show a repeatable median reduction in sorting, drawing, or total GPU work, with no unexplained total-frame regression.
+- [ ] Run five warmed standalone-player samples per configuration in alternating order and record CPU/GPU median, p90, p95, VRAM, selected originals/representatives, and adaptive scale.
+- [ ] Capture fixed front, up, edge, thin-geometry, high-opacity, and rapid-turn views from both eyes; record SSIM, LPIPS, and headset A/B results.
+- [ ] On RTX 3080 + Quest 2 at native eye resolution, representative-route p95 CPU and GPU are each at most 13.9 ms and runtime VRAM is at most 8 GB.
+- [ ] Against the exact reference, SSIM is at least 0.98 and LPIPS is at most 0.03 with no visible popping, shimmer, stereo mismatch, or temporal ghosting.
 
 ## Release gate
 
