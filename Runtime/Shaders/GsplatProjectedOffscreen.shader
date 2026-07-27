@@ -19,7 +19,6 @@ Shader "Hidden/Gsplat/ProjectedOffscreen"
             #pragma vertex Vert
             #pragma fragment Frag
             #pragma require compute
-            #pragma multi_compile_instancing
 
             #include "UnityCG.cginc"
             #define UNITY_INDIRECT_DRAW_ARGS IndirectDrawIndexedArgs
@@ -43,6 +42,9 @@ Shader "Hidden/Gsplat/ProjectedOffscreen"
             struct Attributes
             {
                 float4 vertex : POSITION;
+                #if !defined(UNITY_INSTANCING_ENABLED) && !defined(UNITY_PROCEDURAL_INSTANCING_ENABLED) && !defined(UNITY_STEREO_INSTANCING_ENABLED)
+                uint instanceID : SV_InstanceID;
+                #endif
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -63,7 +65,12 @@ Shader "Hidden/Gsplat/ProjectedOffscreen"
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
                 output.positionCS = float4(0, 0, 2, 1);
 
-                uint order = unity_InstanceID * (uint)_SplatInstanceSize + asuint(input.vertex.z);
+                #if !defined(UNITY_INSTANCING_ENABLED) && !defined(UNITY_PROCEDURAL_INSTANCING_ENABLED) && !defined(UNITY_STEREO_INSTANCING_ENABLED)
+                uint instanceId = input.instanceID;
+                #else
+                uint instanceId = unity_InstanceID;
+                #endif
+                uint order = instanceId * (uint)_SplatInstanceSize + asuint(input.vertex.z);
                 if (order >= _VisibleCountBuffer.Load(0))
                     return output;
 
