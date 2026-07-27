@@ -39,6 +39,17 @@ namespace Gsplat
         public float ChunkCullingAggressiveness;
         [Tooltip("Uses the exact 32-bit depth sort instead of the hybrid renderer's faster 16-bit sort.")]
         public bool UseExactDepthSort;
+        [Tooltip("Maximum adaptive screen-space contribution threshold. 0 disables contribution pruning.")]
+        [Min(0)]
+        public float MaxContributionPruning;
+        [Tooltip("Increases LOD reduction toward view edges. 0 disables peripheral LOD bias.")]
+        [Range(0, 3)]
+        public float PeripheralLodBias;
+        [Tooltip("Renders Gaussian splats at an adaptive lower resolution, then depth-aware upscales them.")]
+        public bool EnableAdaptiveResolution;
+        [Tooltip("Lowest adaptive Gaussian rendering scale.")]
+        [Range(0.5f, 1)]
+        public float MinimumResolutionScale = 0.67f;
         public bool AsyncUpload;
         public bool RenderBeforeUploadComplete = true;
 
@@ -96,6 +107,24 @@ namespace Gsplat
         internal bool HierarchicalCullingActive => m_renderer is { HierarchicalCullingActive: true };
         internal bool LodCullingActive => m_renderer is { LodCullingActive: true };
         internal bool ApproximateDepthSort => LodCullingActive && !UseExactDepthSort;
+        internal bool AdaptiveResolutionActive
+        {
+            get
+            {
+#if UNITY_6000_0_OR_NEWER && GSPLAT_ENABLE_URP
+                return EnableAdaptiveResolution && LodCullingActive &&
+                       !GsplatSorter.Instance.GlobalRenderEnabled &&
+                       GsplatSettings.Instance.AdaptiveRenderMaterial &&
+                       GsplatSettings.Instance.AdaptiveUpscaleMaterial &&
+                       GraphicsSettings.currentRenderPipeline is
+                           UnityEngine.Rendering.Universal.UniversalRenderPipelineAsset;
+#else
+                return false;
+#endif
+            }
+        }
+        internal float AdaptiveResolutionScale =>
+            Mathf.Lerp(1.0f, Mathf.Clamp(MinimumResolutionScale, 0.5f, 1.0f), GsplatLodBudget.Pressure);
         internal GraphicsBuffer SortDispatchArgs => m_renderer?.SortDispatchArgs;
         public GsplatSortMode SortMode = GsplatSortMode.Always;
         [HideInInspector] public uint SortRefreshRate = 1;
@@ -103,9 +132,11 @@ namespace Gsplat
 
         public void ComputeDepth(CommandBuffer cmd, Matrix4x4 matrixMv) => m_renderer.ComputeDepth(cmd, matrixMv);
         internal void Cull(CommandBuffer cmd, in GsplatCameraInfo cameraInfo) =>
-            m_renderer.Cull(cmd, cameraInfo, transform, ChunkCullingAggressiveness, SHDegree);
+            m_renderer.Cull(cmd, cameraInfo, transform, ChunkCullingAggressiveness, SHDegree,
+                MaxContributionPruning, PeripheralLodBias);
         internal void Project(CommandBuffer cmd, in GsplatCameraInfo cameraInfo) =>
             m_renderer.Project(cmd, cameraInfo, transform, SHDegree);
+        internal void DrawAdaptive(CommandBuffer cmd) => m_renderer.DrawOffscreen(cmd, RenderOrder);
 
         void Reset()
         {
@@ -204,8 +235,14 @@ namespace Gsplat
                 // When the global sorter has merged all renderers into a single draw call,
                 // skip the per-renderer draw — GsplatSorter.DrawAll handles rendering.
                 if (!GsplatSorter.Instance.GlobalRenderEnabled)
-                    m_renderer.Render(transform, gameObject.layer, GammaToLinear, SHDegree, Brightness,
-                        1.0f - SplatDownscaleFactor, RenderOrder);
+                {
+                    if (AdaptiveResolutionActive)
+                        m_renderer.PrepareRender(transform, GammaToLinear, SHDegree, Brightness,
+                            1.0f - SplatDownscaleFactor);
+                    else
+                        m_renderer.Render(transform, gameObject.layer, GammaToLinear, SHDegree, Brightness,
+                            1.0f - SplatDownscaleFactor, RenderOrder);
+                }
             }
         }
     }

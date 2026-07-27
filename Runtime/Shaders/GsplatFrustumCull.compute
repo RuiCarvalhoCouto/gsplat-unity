@@ -58,6 +58,7 @@ float _ChunkCullingAggressiveness;
 float _LodErrorPixels;
 float _MinProjectedRadiusPixels;
 float _MinContribution;
+float _PeripheralLodBias;
 float2 _ViewportSize;
 float4x4 _MatrixMV0;
 float4x4 _MatrixMV1;
@@ -222,15 +223,16 @@ bool FootprintOverlapsActiveViews(float3 modelCenter, float3 scale, float4 quat)
 
     bool canOverlap0 = centerView0.z <= 0.0;
     bool canOverlap1 = _EyeCount > 1 && centerView1.z <= 0.0;
-    if (!canOverlap0 && !canOverlap1)
-        return false;
-
-    float3 covA;
-    float3 covB;
+    float3 covA = 0.0;
+    float3 covB = 0.0;
     CalcCovariance(scale, quat, covA, covB);
-    if (canOverlap0 && ProjectedFootprintPixels(centerView0, covA, covB, _MatrixMV0, _MatrixP0) > 0.0)
-        return true;
-    return canOverlap1 && ProjectedFootprintPixels(centerView1, covA, covB, _MatrixMV1, _MatrixP1) > 0.0;
+    float pixels0 = 0.0;
+    float pixels1 = 0.0;
+    if (canOverlap0)
+        pixels0 = ProjectedFootprintPixels(centerView0, covA, covB, _MatrixMV0, _MatrixP0);
+    if (canOverlap1)
+        pixels1 = ProjectedFootprintPixels(centerView1, covA, covB, _MatrixMV1, _MatrixP1);
+    return pixels0 > 0.0 || pixels1 > 0.0;
 }
 
 void AppendVisible(uint splatId, float3 position)
@@ -410,27 +412,28 @@ void BuildSplatArgs(uint3 id : SV_DispatchThreadID)
     _HierarchyDispatchArgs.Store(32, 1);
 }
 
-bool GetHierarchySplatId(uint3 groupId, uint3 threadId, out uint splatId)
+uint GetHierarchySplatId(uint3 groupId, uint3 threadId)
 {
+    uint result = 0xffffffffu;
     uint leafCount = _HierarchyCounts.Load(_LeafListCountOffset);
     uint listIndex = groupId.x / _GroupsPerLeaf;
-    if (listIndex >= leafCount)
+    if (listIndex < leafCount)
     {
-        splatId = 0;
-        return false;
+        uint leafId = _ExactTest != 0 ? _IntersectLeafNodes[listIndex] : _FullLeafNodes[listIndex];
+        uint localIndex = (groupId.x % _GroupsPerLeaf) * GROUP_SIZE + threadId.x;
+        uint splatId = leafId * _SpatialChunkSize + localIndex;
+        if (localIndex < _SpatialChunkSize && splatId < _UploadedCount)
+            if (_UseActiveMask == 0 || _ActiveMaskBuffer[splatId] != 0)
+                result = splatId;
     }
-    uint leafId = _ExactTest != 0 ? _IntersectLeafNodes[listIndex] : _FullLeafNodes[listIndex];
-    uint localIndex = (groupId.x % _GroupsPerLeaf) * GROUP_SIZE + threadId.x;
-    splatId = leafId * _SpatialChunkSize + localIndex;
-    return localIndex < _SpatialChunkSize && splatId < _UploadedCount &&
-           (_UseActiveMask == 0 || _ActiveMaskBuffer[splatId] != 0);
+    return result;
 }
 
 [numthreads(GROUP_SIZE, 1, 1)]
 void ProcessHierarchyUncompressed(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
 {
-    uint splatId;
-    if (!GetHierarchySplatId(groupId, threadId, splatId))
+    uint splatId = GetHierarchySplatId(groupId, threadId);
+    if (splatId == 0xffffffffu)
         return;
     float3 position = _PositionBuffer[splatId];
     if (_ExactTest != 0)
@@ -446,8 +449,8 @@ void ProcessHierarchyUncompressed(uint3 groupId : SV_GroupID, uint3 threadId : S
 [numthreads(GROUP_SIZE, 1, 1)]
 void ProcessHierarchySpark(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
 {
-    uint splatId;
-    if (!GetHierarchySplatId(groupId, threadId, splatId))
+    uint splatId = GetHierarchySplatId(groupId, threadId);
+    if (splatId == 0xffffffffu)
         return;
     uint4 word = _PackedSplatsBuffer[splatId];
     float3 position = float3(f16tof32(word.y & 0xFFFFu), f16tof32(word.y >> 16u), f16tof32(word.z & 0xFFFFu));
@@ -475,15 +478,20 @@ float ProjectedNodeErrorForView(LodNode node, float4x4 matrixMV, float4x4 matrix
     float3 centerView = mul(matrixMV, float4(center, 1.0)).xyz;
     float focal = abs(matrixP[1][1]) * _ViewportSize.y * 0.5;
     float error = node.metrics.x * focal / max(-centerView.z, 1e-5);
+    float4 centerProj = mul(matrixP, float4(centerView, 1.0));
+    float eccentricity = centerProj.w > 1e-5
+        ? saturate(length(centerProj.xy / centerProj.w) * 0.70710678118)
+        : 0.0;
+    float peripheral = smoothstep(0.35, 1.0, eccentricity);
+    error /= 1.0 + _PeripheralLodBias * peripheral;
     return centerView.z >= -1e-5 ? 3.402823466e+38 : error;
 }
 
 float ProjectedNodeError(LodNode node)
 {
-    float error = 0.0;
-    error = ProjectedNodeErrorForView(node, _MatrixMV0, _MatrixP0);
-    if (_EyeCount > 1)
-        error = max(error, ProjectedNodeErrorForView(node, _MatrixMV1, _MatrixP1));
+    float error = ProjectedNodeErrorForView(node, _RenderMatrixMV0, _RenderMatrixP0);
+    if (_RenderEyeCount > 1)
+        error = max(error, ProjectedNodeErrorForView(node, _RenderMatrixMV1, _RenderMatrixP1));
     return error;
 }
 
@@ -516,7 +524,8 @@ bool DetailedFootprintVisible(float3 position, float3 scale, float4 rotation, fl
     }
 
     depth = mul(_MatrixMVDepth, position4).z;
-    return overlaps && maxPixels * 0.5 >= _MinProjectedRadiusPixels &&
+    return opacity >= 1.0 / 255.0 && overlaps &&
+           maxPixels * 0.5 >= _MinProjectedRadiusPixels &&
            opacity * maxPixels * maxPixels >= _MinContribution;
 }
 
@@ -661,7 +670,7 @@ void ExpandLodSelectionUncompressed(uint3 groupId : SV_GroupID, uint3 threadId :
         else if (_UseActiveMask == 0 || _ActiveMaskBuffer[dataIndex] != 0)
         {
             visible = DetailedFootprintVisible(_PositionBuffer[dataIndex], _ScaleBuffer[dataIndex],
-                _RotationBuffer[dataIndex], 1.0, depth);
+                _RotationBuffer[dataIndex], _ColorBuffer[dataIndex].w, depth);
             splatId = dataIndex;
         }
     }

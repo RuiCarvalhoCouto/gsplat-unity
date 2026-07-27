@@ -60,6 +60,18 @@ namespace Gsplat
                         AssetDatabase.SaveAssets();
                     }
                 }
+                if (!settings.AdaptiveUpscaleMaterial)
+                {
+                    settings.AdaptiveUpscaleMaterial = DefaultAdaptiveUpscaleMaterial;
+                    EditorUtility.SetDirty(settings);
+                    AssetDatabase.SaveAssets();
+                }
+                if (!settings.AdaptiveRenderMaterial)
+                {
+                    settings.AdaptiveRenderMaterial = DefaultAdaptiveRenderMaterial;
+                    EditorUtility.SetDirty(settings);
+                    AssetDatabase.SaveAssets();
+                }
 #endif
 
                 s_instance = settings;
@@ -69,6 +81,8 @@ namespace Gsplat
 
         public ComputeShader ComputeShader;
         public GsplatGlobalMaterial GlobalMaterial;
+        public Material AdaptiveRenderMaterial;
+        public Material AdaptiveUpscaleMaterial;
 
         [Tooltip(
             "When enabled, 2+ active Gaussian splat renderers are merged into a single globally depth-sorted draw call.")]
@@ -113,6 +127,12 @@ namespace Gsplat
         static GsplatGlobalMaterial DefaultGlobalMaterial => AssetDatabase.LoadAssetAtPath<GsplatGlobalMaterial>(
             GsplatUtils.k_PackagePath + "Runtime/Materials/GsplatGlobal.asset");
 
+        static Material DefaultAdaptiveUpscaleMaterial => AssetDatabase.LoadAssetAtPath<Material>(
+            GsplatUtils.k_PackagePath + "Runtime/Materials/GsplatDepthAwareUpscale.mat");
+
+        static Material DefaultAdaptiveRenderMaterial => AssetDatabase.LoadAssetAtPath<Material>(
+            GsplatUtils.k_PackagePath + "Runtime/Materials/GsplatProjectedOffscreen.mat");
+
         static GsplatMaterial[] DefaultMaterials
         {
             get
@@ -133,6 +153,8 @@ namespace Gsplat
             Version = GsplatUtils.k_Version;
             ComputeShader = DefaultComputeShader;
             GlobalMaterial = DefaultGlobalMaterial;
+            AdaptiveRenderMaterial = DefaultAdaptiveRenderMaterial;
+            AdaptiveUpscaleMaterial = DefaultAdaptiveUpscaleMaterial;
             Materials = DefaultMaterials;
             SplatInstanceSize = 128;
             UploadBatchSize = 100000;

@@ -163,6 +163,28 @@ namespace Gsplat
         public bool GlobalRenderEnabled { get; private set; }
 
         public bool Valid => m_sortPass is { Valid: true };
+        internal bool HasAdaptiveRendering
+        {
+            get
+            {
+                foreach (var gs in m_activeGsplats)
+                    if (gs is GsplatRenderer { AdaptiveResolutionActive: true })
+                        return true;
+                return false;
+            }
+        }
+
+        internal float AdaptiveResolutionScale
+        {
+            get
+            {
+                float scale = 1.0f;
+                foreach (var gs in m_activeGsplats)
+                    if (gs is GsplatRenderer { AdaptiveResolutionActive: true } renderer)
+                        scale = Mathf.Min(scale, renderer.AdaptiveResolutionScale);
+                return scale;
+            }
+        }
 
         public void InitSorter(ComputeShader computeShader)
         {
@@ -353,6 +375,13 @@ namespace Gsplat
             // --- Global K-way merge ---
             if (GlobalRenderEnabled)
                 m_globalRenderer.DispatchMerge(cmd, m_activeGsplats);
+        }
+
+        internal void DrawAdaptive(CommandBuffer cmd)
+        {
+            foreach (var gs in m_activeGsplats)
+                if (gs is GsplatRenderer { AdaptiveResolutionActive: true } renderer)
+                    renderer.DrawAdaptive(cmd);
         }
 
         // Called by GsplatPlayerLoopHook once per frame, before Unity's PostLateUpdate phase

@@ -27,6 +27,15 @@ namespace Gsplat
             }
         }
 
+        public static float Pressure
+        {
+            get
+            {
+                Update();
+                return Mathf.InverseLerp(1.0f, k_MaxErrorPixels, s_errorPixels);
+            }
+        }
+
         static void Update()
         {
             if (s_lastFrame == Time.frameCount)
@@ -167,6 +176,7 @@ namespace Gsplat
         static readonly int k_lodErrorPixels = Shader.PropertyToID("_LodErrorPixels");
         static readonly int k_minProjectedRadiusPixels = Shader.PropertyToID("_MinProjectedRadiusPixels");
         static readonly int k_minContribution = Shader.PropertyToID("_MinContribution");
+        static readonly int k_peripheralLodBias = Shader.PropertyToID("_PeripheralLodBias");
         static readonly int k_originalSplatCount = Shader.PropertyToID("_OriginalSplatCount");
         static readonly int k_projectedSplatsBuffer = Shader.PropertyToID("_ProjectedSplatsBuffer");
         static readonly int k_lodSourceIds = Shader.PropertyToID("_LodSourceIds");
@@ -342,10 +352,11 @@ namespace Gsplat
         }
 
         public void Cull(CommandBuffer cmd, Camera camera, Transform transform) =>
-            Cull(cmd, new GsplatCameraInfo(camera), transform, 0, m_gsplatAsset.SHBands);
+            Cull(cmd, new GsplatCameraInfo(camera), transform, 0, m_gsplatAsset.SHBands, 0, 0);
 
         internal void Cull(CommandBuffer cmd, in GsplatCameraInfo cameraInfo, Transform transform,
-            float chunkCullingAggressiveness, int shDegree)
+            float chunkCullingAggressiveness, int shDegree, float maxContributionPruning,
+            float peripheralLodBias)
         {
             var cs = m_gsplatAsset.GsplatMaterial.FrustumCullShader;
             Matrix4x4 matrixM = transform.localToWorldMatrix;
@@ -365,7 +376,8 @@ namespace Gsplat
 
             LodCullingActive = CanUseLod(cameraInfo, matrixM);
             if (LodCullingActive)
-                CullLod(cmd, cs, Mathf.Clamp01(chunkCullingAggressiveness), shDegree);
+                CullLod(cmd, cs, Mathf.Clamp01(chunkCullingAggressiveness), shDegree,
+                    Mathf.Max(0, maxContributionPruning), Mathf.Clamp(peripheralLodBias, 0, 3));
             else if (HierarchicalCullingActive)
                 CullHierarchy(cmd, cs, Mathf.Clamp01(chunkCullingAggressiveness));
             else
@@ -483,7 +495,8 @@ namespace Gsplat
             cmd.DispatchCompute(cs, m_kernelProcessHierarchy, m_hierarchyDispatchArgs, sizeof(uint) * 6);
         }
 
-        void CullLod(CommandBuffer cmd, ComputeShader cs, float aggressiveness, int shDegree)
+        void CullLod(CommandBuffer cmd, ComputeShader cs, float aggressiveness, int shDegree,
+            float maxContributionPruning, float peripheralLodBias)
         {
             var resource = GsplatResource;
             GraphicsBuffer activeMask = m_useActiveMask ? m_activeMaskBuffer : m_dummyActiveMaskBuffer;
@@ -493,7 +506,9 @@ namespace Gsplat
             cmd.SetComputeFloatParam(cs, k_chunkCullingAggressiveness, aggressiveness);
             cmd.SetComputeFloatParam(cs, k_lodErrorPixels, GsplatLodBudget.ErrorPixels);
             cmd.SetComputeFloatParam(cs, k_minProjectedRadiusPixels, 0.5f);
-            cmd.SetComputeFloatParam(cs, k_minContribution, 0.0f);
+            cmd.SetComputeFloatParam(cs, k_minContribution,
+                maxContributionPruning * GsplatLodBudget.Pressure);
+            cmd.SetComputeFloatParam(cs, k_peripheralLodBias, peripheralLodBias);
 
             cmd.SetComputeBufferParam(cs, m_kernelLodClear, k_visibleCountBuffer, VisibleCountBuffer);
             cmd.SetComputeBufferParam(cs, m_kernelLodClear, k_lodTraversalCounts, m_lodTraversalCounts);
@@ -542,6 +557,8 @@ namespace Gsplat
             cmd.SetComputeBufferParam(cs, m_kernelLodExpand, k_visibleCountBuffer, VisibleCountBuffer);
             cmd.SetComputeBufferParam(cs, m_kernelLodExpand, k_lodSourceIds, m_lodSourceIds);
             BindSplatDataBuffers(cmd, cs, m_kernelLodExpand);
+            if (resource is GsplatResourceUncompressed uncompressed)
+                cmd.SetComputeBufferParam(cs, m_kernelLodExpand, k_colorBuffer, uncompressed.ColorBuffer);
             cmd.DispatchCompute(cs, m_kernelLodExpand, m_lodDispatchArgs, 0);
 
             ProjectVisibleSplats(cmd, cs, resource, shDegree);
@@ -936,6 +953,31 @@ namespace Gsplat
                 m_framesBeforeRecomputeSort -= 1;
         }
 
+        public void PrepareRender(Transform transform, bool gammaToLinear, int shDegree,
+            float brightness, float scaleFactor)
+        {
+            if (m_remainingCount <= 0)
+                return;
+
+            m_propertyBlock.SetInteger(k_splatCount, (int)m_remainingCount);
+            m_propertyBlock.SetInteger(k_originalSplatCount, (int)SplatCount);
+            m_propertyBlock.SetInteger(k_gammaToLinear, gammaToLinear ? 1 : 0);
+            m_propertyBlock.SetInteger(k_splatInstanceSize, (int)GsplatSettings.Instance.SplatInstanceSize);
+            m_propertyBlock.SetInteger(k_shDegree, Math.Min(m_gsplatAsset.SHBands, shDegree));
+            m_propertyBlock.SetFloat(k_brightness, brightness);
+            m_propertyBlock.SetFloat(k_scaleFactor, scaleFactor);
+            m_propertyBlock.SetMatrix(k_matrixM, transform.localToWorldMatrix);
+            m_propertyBlock.SetInteger(k_useVisibleCount, FrustumCullingActive ? 1 : 0);
+        }
+
+        internal void DrawOffscreen(CommandBuffer cmd, uint renderOrder)
+        {
+            if (m_remainingCount <= 0 || !FrustumCullingActive || DrawArgs == null)
+                return;
+            cmd.DrawMeshInstancedIndirect(GsplatSettings.Instance.Mesh, 0,
+                GsplatSettings.Instance.AdaptiveRenderMaterial, 0, DrawArgs, 0, m_propertyBlock);
+        }
+
         /// <summary>
         /// Render the splats.
         /// </summary>
@@ -951,16 +993,7 @@ namespace Gsplat
         {
             if (m_remainingCount <= 0)
                 return;
-
-            m_propertyBlock.SetInteger(k_splatCount, (int)m_remainingCount);
-            m_propertyBlock.SetInteger(k_originalSplatCount, (int)SplatCount);
-            m_propertyBlock.SetInteger(k_gammaToLinear, gammaToLinear ? 1 : 0);
-            m_propertyBlock.SetInteger(k_splatInstanceSize, (int)GsplatSettings.Instance.SplatInstanceSize);
-            m_propertyBlock.SetInteger(k_shDegree, Math.Min(m_gsplatAsset.SHBands, shDegree));
-            m_propertyBlock.SetFloat(k_brightness, brightness);
-            m_propertyBlock.SetFloat(k_scaleFactor, scaleFactor);
-            m_propertyBlock.SetMatrix(k_matrixM, transform.localToWorldMatrix);
-            m_propertyBlock.SetInteger(k_useVisibleCount, FrustumCullingActive ? 1 : 0);
+            PrepareRender(transform, gammaToLinear, shDegree, brightness, scaleFactor);
 
             uint order = Math.Clamp(renderOrder, 0, GsplatSettings.Instance.MaxRenderOrder - 1);
             var rp = new RenderParams(m_gsplatAsset.Materials[order])
