@@ -49,6 +49,15 @@ struct LodSplat
 StructuredBuffer<LodSplat> _LodSplatsBuffer;
 StructuredBuffer<float3> _LodSHBuffer;
 
+struct ProjectedSplat
+{
+    float4 centerProj;
+    float4 axes;
+    float4 color;
+};
+
+StructuredBuffer<ProjectedSplat> _ProjectedSplatsBuffer;
+
 const float4 discardVec = float4(0.0, 0.0, 2.0, 1.0);
 
 bool InitCenter(float4x4 modelView, float3 modelCenter, out SplatCenter center)

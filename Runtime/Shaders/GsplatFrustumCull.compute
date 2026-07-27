@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 #define GROUP_SIZE 256
+#define PROJECTION_GROUP_SIZE 64
 #define COARSE_LEAF_COUNT 64
 #define NODE_FULLY_INSIDE 0x80000000u
 #define NODE_LOD_REPRESENTATIVES 0x40000000u
 #define NODE_INDEX_MASK 0x3fffffffu
+#define PROJECTED_SPLAT_ID 0x80000000u
 
 #include "UnityIndirect.cginc"
 
@@ -25,6 +27,9 @@
 #pragma kernel BuildLodExpandArgs
 #pragma kernel ExpandLodSelectionUncompressed
 #pragma kernel ExpandLodSelectionSpark
+#pragma kernel BuildProjectionArgs
+#pragma kernel ProjectVisibleUncompressed
+#pragma kernel ProjectVisibleSpark
 #pragma kernel BuildArgs
 #pragma multi_compile _ STEREO_INSTANCING_ON STEREO_MULTIVIEW_ON
 
@@ -46,6 +51,9 @@ uint _LeafListCountOffset;
 uint _LodRootNode;
 uint _LodCurrentCountOffset;
 uint _LodNextCountOffset;
+uint _RenderEyeCount;
+uint _SHDegree;
+uint _SHCoefficientCount;
 float _ChunkCullingAggressiveness;
 float _LodErrorPixels;
 float _MinProjectedRadiusPixels;
@@ -56,13 +64,23 @@ float4x4 _MatrixMV1;
 float4x4 _MatrixMVDepth;
 float4x4 _MatrixP0;
 float4x4 _MatrixP1;
+float4x4 _RenderMatrixMV0;
+float4x4 _RenderMatrixMV1;
+float4x4 _RenderMatrixP0;
+float4x4 _RenderMatrixP1;
 
 StructuredBuffer<uint> _CandidateOrderBuffer;
 StructuredBuffer<uint> _ActiveMaskBuffer;
 StructuredBuffer<float3> _PositionBuffer;
 StructuredBuffer<float3> _ScaleBuffer;
 StructuredBuffer<float4> _RotationBuffer;
+StructuredBuffer<float4> _ColorBuffer;
+StructuredBuffer<float3> _SHBuffer;
 StructuredBuffer<uint4> _PackedSplatsBuffer;
+StructuredBuffer<uint2> _PackedSH1Buffer;
+StructuredBuffer<uint4> _PackedSH2Buffer;
+StructuredBuffer<uint4> _PackedSH3Buffer;
+StructuredBuffer<uint4> _PackedSH4Buffer;
 
 struct SpatialNode
 {
@@ -98,11 +116,23 @@ StructuredBuffer<SpatialNode> _LeafNodesBuffer;
 StructuredBuffer<SpatialNode> _CoarseNodesBuffer;
 StructuredBuffer<LodNode> _LodNodesBuffer;
 StructuredBuffer<LodSplat> _LodSplatsBuffer;
+StructuredBuffer<float3> _LodSHBuffer;
 RWStructuredBuffer<uint> _LodNodeQueueInput;
 RWStructuredBuffer<uint> _LodNodeQueueOutput;
 RWStructuredBuffer<uint> _LodSelectedNodes;
 RWByteAddressBuffer _LodTraversalCounts;
 RWByteAddressBuffer _LodDispatchArgs;
+RWStructuredBuffer<uint> _LodSourceIds;
+
+struct ProjectedSplat
+{
+    float4 centerProj;
+    float4 axes;
+    float4 color;
+};
+
+RWStructuredBuffer<ProjectedSplat> _ProjectedSplatsBuffer;
+RWByteAddressBuffer _ProjectionDispatchArgs;
 RWStructuredBuffer<uint> _VisibleCoarseNodes;
 RWStructuredBuffer<uint> _FullLeafNodes;
 RWStructuredBuffer<uint> _IntersectLeafNodes;
@@ -593,7 +623,8 @@ void AppendLodGroup(bool visible, uint splatId, float depth, uint threadIndex)
     if (visible)
     {
         uint outputIndex = g_lodOutputBase + g_lodScan[threadIndex];
-        _OrderBuffer[outputIndex] = splatId;
+        _LodSourceIds[outputIndex] = splatId;
+        _OrderBuffer[outputIndex] = PROJECTED_SPLAT_ID | outputIndex;
         _DepthBuffer[outputIndex] = depth;
     }
 }
@@ -686,6 +717,292 @@ void ExpandLodSelectionSpark(uint3 groupId : SV_GroupID, uint3 threadId : SV_Gro
         }
     }
     AppendLodGroup(visible, splatId, depth, threadId.x);
+}
+
+int ReadSignedBits(uint4 words, uint valueIndex, uint bits)
+{
+    uint bitIndex = valueIndex * bits;
+    uint wordIndex = bitIndex >> 5;
+    uint bitOffset = bitIndex & 31u;
+    uint packed = words[wordIndex] >> bitOffset;
+    if (bitOffset + bits > 32u)
+        packed |= words[wordIndex + 1u] << (32u - bitOffset);
+    uint leftShift = 32u - bits;
+    return int(packed << leftShift) >> leftShift;
+}
+
+void ClearProjectionSH(out float3 sh[24])
+{
+    [unroll]
+    for (uint i = 0; i < 24; ++i)
+        sh[i] = 0.0;
+}
+
+void LoadLodProjectionSH(uint id, out float3 sh[24])
+{
+    ClearProjectionSH(sh);
+    for (uint i = 0; i < _SHDegree * (_SHDegree + 2u); ++i)
+        sh[i] = _LodSHBuffer[id * _SHCoefficientCount + i];
+}
+
+void LoadUncompressedProjectionSH(uint id, out float3 sh[24])
+{
+    ClearProjectionSH(sh);
+    uint activeCoefficientCount = _SHDegree * (_SHDegree + 2u);
+    for (uint i = 0; i < activeCoefficientCount; ++i)
+        sh[i] = _SHBuffer[id * _SHCoefficientCount + i];
+}
+
+void LoadSparkProjectionSH(uint id, out float3 sh[24])
+{
+    ClearProjectionSH(sh);
+    if (_SHDegree >= 1)
+    {
+        uint2 packed = _PackedSH1Buffer[id];
+        uint4 words = uint4(packed, 0, 0);
+        [unroll]
+        for (uint i = 0; i < 3; ++i)
+        {
+            uint value = i * 3;
+            sh[i] = float3(ReadSignedBits(words, value, 7), ReadSignedBits(words, value + 1, 7),
+                ReadSignedBits(words, value + 2, 7)) / 63.0;
+        }
+    }
+    if (_SHDegree >= 2)
+    {
+        uint4 words = _PackedSH2Buffer[id];
+        [unroll]
+        for (uint i = 0; i < 5; ++i)
+        {
+            uint value = i * 3;
+            sh[i + 3] = float3(ReadSignedBits(words, value, 8), ReadSignedBits(words, value + 1, 8),
+                ReadSignedBits(words, value + 2, 8)) / 127.0;
+        }
+    }
+    if (_SHDegree >= 3)
+    {
+        uint4 words = _PackedSH3Buffer[id];
+        [unroll]
+        for (uint i = 0; i < 7; ++i)
+        {
+            uint value = i * 3;
+            sh[i + 8] = float3(ReadSignedBits(words, value, 6), ReadSignedBits(words, value + 1, 6),
+                ReadSignedBits(words, value + 2, 6)) / 31.0;
+        }
+    }
+    if (_SHDegree >= 4)
+    {
+        uint4 words = _PackedSH4Buffer[id];
+        [unroll]
+        for (uint i = 0; i < 9; ++i)
+        {
+            uint value = i * 3;
+            sh[i + 15] = float3(ReadSignedBits(words, value, 4), ReadSignedBits(words, value + 1, 4),
+                ReadSignedBits(words, value + 2, 4)) / 7.0;
+        }
+    }
+}
+
+float3 EvaluateProjectionSH(float3 sh[24], float3 dir)
+{
+    float x = dir.x;
+    float y = dir.y;
+    float z = dir.z;
+    float3 result = 0.0;
+    if (_SHDegree >= 1)
+        result = 0.4886025119029199 * (-sh[0] * y + sh[1] * z - sh[2] * x);
+
+    float xx = x * x;
+    float yy = y * y;
+    float zz = z * z;
+    float xy = x * y;
+    float yz = y * z;
+    float xz = x * z;
+    if (_SHDegree >= 2)
+        result += sh[3] * (1.0925484305920792 * xy) +
+                  sh[4] * (-1.0925484305920792 * yz) +
+                  sh[5] * (0.31539156525252005 * (2.0 * zz - xx - yy)) +
+                  sh[6] * (-1.0925484305920792 * xz) +
+                  sh[7] * (0.5462742152960396 * (xx - yy));
+    if (_SHDegree >= 3)
+        result += sh[8] * (-0.5900435899266435 * y * (3.0 * xx - yy)) +
+                  sh[9] * (2.890611442640554 * xy * z) +
+                  sh[10] * (-0.4570457994644658 * y * (4.0 * zz - xx - yy)) +
+                  sh[11] * (0.3731763325901154 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy)) +
+                  sh[12] * (-0.4570457994644658 * x * (4.0 * zz - xx - yy)) +
+                  sh[13] * (1.445305721320277 * z * (xx - yy)) +
+                  sh[14] * (-0.5900435899266435 * x * (xx - 3.0 * yy));
+    if (_SHDegree >= 4)
+        result += sh[15] * (0.6258357354491761 * xy * (xx - yy)) +
+                  sh[16] * (-1.7701307697799304 * yz * (3.0 * xx - yy)) +
+                  sh[17] * (0.9461746957575601 * xy * (6.0 * zz - xx - yy)) +
+                  sh[18] * (-0.6690465435572892 * yz * (4.0 * zz - 3.0 * xx - 3.0 * yy)) +
+                  sh[19] * (0.10578554691520431 * (35.0 * zz * zz - 30.0 * zz + 3.0)) +
+                  sh[20] * (-0.6690465435572892 * xz * (4.0 * zz - 3.0 * xx - 3.0 * yy)) +
+                  sh[21] * (0.47308734787878004 * (xx - yy) * (6.0 * zz - xx - yy)) +
+                  sh[22] * (-1.7701307697799304 * xz * (xx - 3.0 * yy)) +
+                  sh[23] * (0.6258357354491761 * (xx * xx - 6.0 * xx * yy + yy * yy));
+    return result;
+}
+
+ProjectedSplat ProjectSplat(float3 position, float3 scale, float4 rotation, float4 color,
+                            float3 sh[24], float4x4 matrixMV, float4x4 matrixP)
+{
+    ProjectedSplat output;
+    output.centerProj = float4(0, 0, 2, 1);
+    output.axes = 0;
+    output.color = float4(0, 0, 0, -1);
+
+    float4 centerView4 = mul(matrixMV, float4(position, 1.0));
+    float4 centerProj = mul(matrixP, centerView4);
+    bool valid = centerView4.z <= 0.0 && centerProj.w > 0.0 &&
+                 centerProj.z >= 0.0 && centerProj.z <= centerProj.w;
+    float3 covA;
+    float3 covB;
+    CalcCovariance(scale, rotation, covA, covB);
+    float3x3 covariance = float3x3(
+        covA.x, covA.y, covA.z,
+        covA.y, covB.x, covB.y,
+        covA.z, covB.y, covB.z);
+    float3 centerView = centerView4.xyz / centerView4.w;
+    float focal = _ViewportSize.x * matrixP[0][0];
+    float3 v = matrixP[3][3] == 1.0 ? float3(0, 0, 1) : centerView;
+    if (matrixP[3][3] != 1.0)
+        v.z = min(v.z, -1e-6);
+    float j1 = focal / v.z;
+    float2 j2 = -j1 / v.z * v.xy;
+    float3x3 j = float3x3(j1, 0, j2.x, 0, j1, j2.y, 0, 0, 0);
+    float3x3 t = mul(j, (float3x3)matrixMV);
+    float3x3 projectedCovariance = mul(mul(t, covariance), transpose(t));
+
+    float diagonal1 = projectedCovariance[0][0] + 0.3;
+    float offDiagonal = projectedCovariance[0][1];
+    float diagonal2 = projectedCovariance[1][1] + 0.3;
+    float mid = 0.5 * (diagonal1 + diagonal2);
+    float radius = length(float2((diagonal1 - diagonal2) * 0.5, offDiagonal));
+    float lambda1 = mid + radius;
+    float lambda2 = max(mid - radius, 0.1);
+    float vmin = min(1024.0, min(_ViewportSize.x, _ViewportSize.y));
+    float l1 = 2.0 * min(sqrt(2.0 * lambda1), vmin);
+    float l2 = 2.0 * min(sqrt(2.0 * lambda2), vmin);
+    valid = valid && (l1 >= 2.0 || l2 >= 2.0);
+
+    float2 diagonalVector = float2(offDiagonal, lambda1 - diagonal1);
+    float diagonalLength = length(diagonalVector);
+    diagonalVector = diagonalLength > 1e-8 ? diagonalVector / diagonalLength : float2(1, 0);
+    float2 clipScale = centerProj.ww / _ViewportSize;
+    float2 axis1 = l1 * diagonalVector * clipScale;
+    float2 axis2 = l2 * float2(diagonalVector.y, -diagonalVector.x) * clipScale;
+    float maxL = max(l1, l2);
+    valid = valid && !any(abs(centerProj.xy) - maxL * clipScale > centerProj.ww);
+
+    centerProj.z = clamp(centerProj.z, -abs(centerProj.w), abs(centerProj.w));
+    float3 direction = mul(centerView, (float3x3)matrixMV);
+    float directionLengthSq = dot(direction, direction);
+    direction = directionLengthSq > 1e-12 ? direction * rsqrt(directionLengthSq) : float3(0, 0, 1);
+    output.centerProj = centerProj;
+    output.axes = float4(axis1, axis2);
+    output.color = float4(color.rgb + EvaluateProjectionSH(sh, direction), valid ? color.a : -1.0);
+    return output;
+}
+
+[numthreads(1, 1, 1)]
+void BuildProjectionArgs(uint3 id : SV_DispatchThreadID)
+{
+    uint visibleCount = _VisibleCountBuffer.Load(0);
+    _ProjectionDispatchArgs.Store(0,
+        max(1u, (visibleCount + PROJECTION_GROUP_SIZE - 1u) / PROJECTION_GROUP_SIZE));
+    _ProjectionDispatchArgs.Store(4, 1);
+    _ProjectionDispatchArgs.Store(8, 1);
+}
+
+void StoreProjectedViews(uint slot, float3 position, float3 scale, float4 rotation, float4 color,
+                         float3 sh[24])
+{
+    _ProjectedSplatsBuffer[slot * 2] =
+        ProjectSplat(position, scale, rotation, color, sh, _RenderMatrixMV0, _RenderMatrixP0);
+    if (_RenderEyeCount > 1)
+        _ProjectedSplatsBuffer[slot * 2 + 1] =
+            ProjectSplat(position, scale, rotation, color, sh, _RenderMatrixMV1, _RenderMatrixP1);
+    else
+        _ProjectedSplatsBuffer[slot * 2 + 1] = _ProjectedSplatsBuffer[slot * 2];
+}
+
+[numthreads(PROJECTION_GROUP_SIZE, 1, 1)]
+void ProjectVisibleUncompressed(uint3 id : SV_DispatchThreadID)
+{
+    uint visibleCount = _VisibleCountBuffer.Load(0);
+    if (id.x >= visibleCount)
+        return;
+    uint sourceId = _LodSourceIds[id.x];
+    float3 position;
+    float3 scale;
+    float4 rotation;
+    float4 color;
+    float3 sh[24];
+    if (sourceId >= _UploadedCount)
+    {
+        uint lodId = sourceId - _UploadedCount;
+        LodSplat splat = _LodSplatsBuffer[lodId];
+        position = splat.positionOpacity.xyz;
+        scale = splat.scaleContribution.xyz;
+        rotation = splat.rotation;
+        color = splat.color;
+        LoadLodProjectionSH(lodId, sh);
+    }
+    else
+    {
+        position = _PositionBuffer[sourceId];
+        scale = _ScaleBuffer[sourceId];
+        rotation = _RotationBuffer[sourceId];
+        color = _ColorBuffer[sourceId];
+        color.rgb = color.rgb * 0.28209479177387814 + 0.5;
+        LoadUncompressedProjectionSH(sourceId, sh);
+    }
+    StoreProjectedViews(id.x, position, scale, rotation, color, sh);
+}
+
+[numthreads(PROJECTION_GROUP_SIZE, 1, 1)]
+void ProjectVisibleSpark(uint3 id : SV_DispatchThreadID)
+{
+    uint visibleCount = _VisibleCountBuffer.Load(0);
+    if (id.x >= visibleCount)
+        return;
+    uint sourceId = _LodSourceIds[id.x];
+    float3 position;
+    float3 scale;
+    float4 rotation;
+    float4 color;
+    float3 sh[24];
+    if (sourceId >= _UploadedCount)
+    {
+        uint lodId = sourceId - _UploadedCount;
+        LodSplat splat = _LodSplatsBuffer[lodId];
+        position = splat.positionOpacity.xyz;
+        scale = splat.scaleContribution.xyz;
+        rotation = splat.rotation;
+        color = splat.color;
+        LoadLodProjectionSH(lodId, sh);
+    }
+    else
+    {
+        uint4 word = _PackedSplatsBuffer[sourceId];
+        position = float3(f16tof32(word.y & 0xFFFFu), f16tof32(word.y >> 16u),
+            f16tof32(word.z & 0xFFFFu));
+        uint3 encodedScale = uint3(word.w & 0xFFu, (word.w >> 8u) & 0xFFu, (word.w >> 16u) & 0xFFu);
+        float scaleStep = 21.0 / 254.0;
+        scale = float3(
+            encodedScale.x == 0 ? 0.0 : exp(-12.0 + float(encodedScale.x - 1u) * scaleStep),
+            encodedScale.y == 0 ? 0.0 : exp(-12.0 + float(encodedScale.y - 1u) * scaleStep),
+            encodedScale.z == 0 ? 0.0 : exp(-12.0 + float(encodedScale.z - 1u) * scaleStep));
+        uint encodedRotation = ((word.z >> 16u) & 0xFFFFu) | ((word.w >> 8u) & 0xFF0000u);
+        rotation = DecodeQuatOctXyz88R8(encodedRotation);
+        color = float4(
+            float3(word.x & 0xFFu, (word.x >> 8u) & 0xFFu, (word.x >> 16u) & 0xFFu) / 255.0,
+            float((word.x >> 24u) & 0xFFu) / 255.0);
+        LoadSparkProjectionSH(sourceId, sh);
+    }
+    StoreProjectedViews(id.x, position, scale, rotation, color, sh);
 }
 
 [numthreads(1, 1, 1)]

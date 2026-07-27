@@ -114,9 +114,9 @@ namespace Gsplat
                 Marshal.SizeOf(typeof(Vector4)));
             ColorBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, (int)splatCount,
                 Marshal.SizeOf(typeof(Vector4)));
-            if (shBands > 0)
-                SHBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured,
-                    GsplatUtils.SHBandsToCoefficientCount(shBands) * (int)splatCount, Marshal.SizeOf(typeof(Vector3)));
+            SHBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured,
+                Mathf.Max(1, GsplatUtils.SHBandsToCoefficientCount(shBands) * (int)splatCount),
+                Marshal.SizeOf(typeof(Vector3)));
         }
 
         public override void Dispose()
@@ -160,18 +160,14 @@ namespace Gsplat
                 return;
             PackedSplatsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, (int)splatCount,
                 sizeof(uint) * 4);
-            if (shBands >= 1)
-                PackedSH1Buffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, (int)splatCount,
-                    sizeof(uint) * 2);
-            if (shBands >= 2)
-                PackedSH2Buffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, (int)splatCount,
-                    sizeof(uint) * 4);
-            if (shBands >= 3)
-                PackedSH3Buffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, (int)splatCount,
-                    sizeof(uint) * 4);
-            if (shBands >= 4)
-                PackedSH4Buffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, (int)splatCount,
-                    sizeof(uint) * 4);
+            PackedSH1Buffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured,
+                shBands >= 1 ? (int)splatCount : 1, sizeof(uint) * 2);
+            PackedSH2Buffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured,
+                shBands >= 2 ? (int)splatCount : 1, sizeof(uint) * 4);
+            PackedSH3Buffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured,
+                shBands >= 3 ? (int)splatCount : 1, sizeof(uint) * 4);
+            PackedSH4Buffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured,
+                shBands >= 4 ? (int)splatCount : 1, sizeof(uint) * 4);
         }
 
         public override void Dispose()

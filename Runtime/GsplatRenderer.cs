@@ -100,7 +100,9 @@ namespace Gsplat
 
         public void ComputeDepth(CommandBuffer cmd, Matrix4x4 matrixMv) => m_renderer.ComputeDepth(cmd, matrixMv);
         internal void Cull(CommandBuffer cmd, in GsplatCameraInfo cameraInfo) =>
-            m_renderer.Cull(cmd, cameraInfo, transform, ChunkCullingAggressiveness);
+            m_renderer.Cull(cmd, cameraInfo, transform, ChunkCullingAggressiveness, SHDegree);
+        internal void Project(CommandBuffer cmd, in GsplatCameraInfo cameraInfo) =>
+            m_renderer.Project(cmd, cameraInfo, transform, SHDegree);
 
         void Reset()
         {
@@ -192,6 +194,7 @@ namespace Gsplat
                 else if (cullingSupported)
                     m_warnedFrustumCullingUnavailable = false;
                 m_renderer.SetFrustumCulling(EnableFrustumCulling && cullingSupported);
+                m_renderer.NotifyTransform(transform);
                 m_renderer.EvaluateRefreshRequired(SortMode, SortRefreshRate - 1, CutoutsRefreshRate - 1);
                 m_renderer.DispatchInitOrder(Cutouts, transform.localToWorldMatrix, CutoutsUpdateBounds);
                 // When the global sorter has merged all renderers into a single draw call,

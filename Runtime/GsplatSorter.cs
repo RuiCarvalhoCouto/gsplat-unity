@@ -18,6 +18,11 @@ namespace Gsplat
         public readonly Matrix4x4 ViewMatrix1;
         public readonly Matrix4x4 ProjectionMatrix0;
         public readonly Matrix4x4 ProjectionMatrix1;
+        public readonly int RenderViewCount;
+        public readonly Matrix4x4 RenderViewMatrix0;
+        public readonly Matrix4x4 RenderViewMatrix1;
+        public readonly Matrix4x4 RenderProjectionMatrix0;
+        public readonly Matrix4x4 RenderProjectionMatrix1;
         public readonly bool SupportsHybridLod;
 
         public GsplatCameraInfo(Camera camera, bool supportsHybridLod = false)
@@ -38,6 +43,11 @@ namespace Gsplat
             ProjectionMatrix1 = stereo
                 ? GL.GetGPUProjectionMatrix(camera.GetStereoProjectionMatrix(Camera.StereoscopicEye.Right), false)
                 : ProjectionMatrix0;
+            RenderViewCount = ViewCount;
+            RenderViewMatrix0 = ViewMatrix0;
+            RenderViewMatrix1 = ViewMatrix1;
+            RenderProjectionMatrix0 = ProjectionMatrix0;
+            RenderProjectionMatrix1 = ProjectionMatrix1;
             SupportsHybridLod = supportsHybridLod;
         }
 
@@ -52,6 +62,31 @@ namespace Gsplat
             ViewMatrix1 = viewMatrix1;
             ProjectionMatrix0 = projectionMatrix0;
             ProjectionMatrix1 = projectionMatrix1;
+            RenderViewCount = viewCount;
+            RenderViewMatrix0 = viewMatrix0;
+            RenderViewMatrix1 = viewMatrix1;
+            RenderProjectionMatrix0 = projectionMatrix0;
+            RenderProjectionMatrix1 = projectionMatrix1;
+            SupportsHybridLod = supportsHybridLod;
+        }
+
+        public GsplatCameraInfo(Camera camera, int viewCount, Vector2 viewportSize, Matrix4x4 viewMatrix0,
+            Matrix4x4 projectionMatrix0, Matrix4x4 viewMatrix1, Matrix4x4 projectionMatrix1,
+            int renderViewCount, Matrix4x4 renderViewMatrix0, Matrix4x4 renderProjectionMatrix0,
+            Matrix4x4 renderViewMatrix1, Matrix4x4 renderProjectionMatrix1, bool supportsHybridLod)
+        {
+            ViewCount = viewCount;
+            ViewportSize = viewportSize;
+            SortViewMatrix = camera.worldToCameraMatrix;
+            ViewMatrix0 = viewMatrix0;
+            ViewMatrix1 = viewMatrix1;
+            ProjectionMatrix0 = projectionMatrix0;
+            ProjectionMatrix1 = projectionMatrix1;
+            RenderViewCount = renderViewCount;
+            RenderViewMatrix0 = renderViewMatrix0;
+            RenderViewMatrix1 = renderViewMatrix1;
+            RenderProjectionMatrix0 = renderProjectionMatrix0;
+            RenderProjectionMatrix1 = renderProjectionMatrix1;
             SupportsHybridLod = supportsHybridLod;
         }
     }
@@ -259,9 +294,12 @@ namespace Gsplat
             cmd.BeginSample(k_cullPassName);
             foreach (var gs in m_activeGsplats)
             {
-                if (gs is GsplatRenderer { FrustumCullingActive: true } renderer &&
-                    gs.ComputeSortRequired)
+                if (gs is not GsplatRenderer { FrustumCullingActive: true } renderer)
+                    continue;
+                if (gs.ComputeSortRequired)
                     renderer.Cull(cmd, cameraInfo);
+                else if (renderer.LodCullingActive)
+                    renderer.Project(cmd, cameraInfo);
             }
             cmd.EndSample(k_cullPassName);
 

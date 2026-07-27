@@ -49,8 +49,15 @@ namespace Gsplat
                     var cullingParams = cameraData.xr.cullingParams;
                     Matrix4x4 view = cullingParams.stereoViewMatrix;
                     Matrix4x4 projection = GL.GetGPUProjectionMatrix(cullingParams.stereoProjectionMatrix, false);
+                    Matrix4x4 renderView0 = cameraData.GetViewMatrix(0);
+                    Matrix4x4 renderProjection0 =
+                        GL.GetGPUProjectionMatrix(cameraData.GetProjectionMatrix(0), false);
+                    Matrix4x4 renderView1 = cameraData.GetViewMatrix(1);
+                    Matrix4x4 renderProjection1 =
+                        GL.GetGPUProjectionMatrix(cameraData.GetProjectionMatrix(1), false);
                     return new GsplatCameraInfo(cameraData.camera, 1, viewport.size, view, projection,
-                        view, projection, true);
+                        view, projection, 2, renderView0, renderProjection0, renderView1,
+                        renderProjection1, true);
                 }
 
                 Matrix4x4 view0 = cameraData.GetViewMatrix(0);
