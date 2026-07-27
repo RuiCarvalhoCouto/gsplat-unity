@@ -18,11 +18,14 @@ namespace Gsplat
             CutoutsEveryNSorts,
         }
 
+        [Tooltip("Gaussian splatting asset rendered by this component.")]
         public GsplatAsset GsplatAsset;
 
         // Range is enforced by GsplatRendererEditor based on the bound asset's SHBands.
+        [Tooltip("Maximum spherical harmonics degree used for view-dependent color.")]
         public int SHDegree = 3;
         [HideInInspector] public uint RenderOrder = 0;
+        [Tooltip("Multiplies rendered Gaussian color intensity.")]
         public float Brightness = 1.0f;
 
         [Tooltip(
@@ -30,17 +33,20 @@ namespace Gsplat
         [Range(0, 1)]
         public float SplatDownscaleFactor = 0.0f;
 
+        [Tooltip("Converts stored Gaussian colors from gamma to linear space in the shader.")]
         public bool GammaToLinear;
-        [Tooltip("Filters splats whose projected footprint is outside the camera view before sorting and drawing.")]
+        [Tooltip("Filters spatial chunks and splats outside the camera view before sorting and drawing.")]
         public bool EnableFrustumCulling;
         [Tooltip(
             "Shrinks spatial chunk bounds toward their Gaussian centers. 0 preserves conservative visibility; higher values can improve rejection at the cost of edge popping.")]
         [Range(0, 1)]
         public float ChunkCullingAggressiveness;
+        [Tooltip("Uploads Gaussian data over multiple frames during Play Mode.")]
         public bool AsyncUpload;
+        [Tooltip("Renders already-uploaded Gaussians before an asynchronous upload finishes.")]
         public bool RenderBeforeUploadComplete = true;
 
-        [Tooltip("Does cutouts update the Gsplat world bounds? (Costly on moving cutouts)")]
+        [Tooltip("Updates world bounds from active cutouts. Costly when cutouts move.")]
         public bool CutoutsUpdateBounds = true;
 
         GsplatAsset m_prevAsset;
@@ -93,6 +99,7 @@ namespace Gsplat
         internal GraphicsBuffer HierarchyCountsBuffer => m_renderer?.HierarchyCountsBuffer;
         internal bool HierarchicalCullingActive => m_renderer is { HierarchicalCullingActive: true };
         internal GraphicsBuffer SortDispatchArgs => m_renderer?.SortDispatchArgs;
+        [Tooltip("Controls how often depth sorting and cutout masks refresh.")]
         public GsplatSortMode SortMode = GsplatSortMode.Always;
         [HideInInspector] public uint SortRefreshRate = 1;
         [HideInInspector] public uint CutoutsRefreshRate = 1;
