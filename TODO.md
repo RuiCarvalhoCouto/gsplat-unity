@@ -1,4 +1,4 @@
-- [ ] Implement more levels of hierarchy to Spatial Chunk Culling
+- [x] Implement more levels of hierarchy to Spatial Chunk Culling
 
 - [ ] Pass all tests in FRUSTUM_CULLING_TEST_CHECKLIST.md.
 - [ ] Delete FRUSTUM_CULLING_TEST_CHECKLIST.md.
